@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Conteo Rápido — Pantalla</title>
+<style>
+  /* Pantalla para TV / proyector: siempre oscura, tipografía grande, se actualiza sola. */
+  :root{ --bg:#0d0d0d; --card:#1a1a19; --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781; --grid:#2c2c2a; --line:#383835;
+         --good:#0ca30c; --warn:#fab219; --serious:#ec835a; --crit:#d03b3b; --accent:#3987e5; --neutral:#383835; }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);font:clamp(14px,1.05vw,26px)/1.35 system-ui,-apple-system,"Segoe UI",sans-serif;overflow:hidden}
+  .top{display:flex;justify-content:space-between;align-items:center;padding:1.2vh 2vw;border-bottom:1px solid var(--grid)}
+  .top h1{margin:0;font-size:clamp(20px,2.2vw,48px);font-weight:800;letter-spacing:.2px}
+  .top p{margin:.2em 0 0;color:var(--ink2);font-size:clamp(12px,1vw,22px)}
+  .status{text-align:right;color:var(--ink2);font-size:clamp(12px,1vw,22px)}
+  .live{display:inline-block;padding:.15em .7em;border-radius:99px;background:rgba(12,163,12,.18);color:#7ee787;font-weight:700;margin-left:.6em}
+  .live.off{background:rgba(208,59,59,.2);color:#ff9b9b}
+  main{display:grid;grid-template-columns:1.45fr 1.25fr 1fr;grid-template-rows:auto 1fr auto;gap:1.2vh 1.2vw;padding:1.2vh 2vw;height:calc(100vh - 8vh);transition:opacity .25s}
+  main.cargando{opacity:.75}
+  .card{background:var(--card);border:1px solid var(--grid);border-radius:14px;padding:1.4vh 1.4vw;min-width:0;overflow:hidden}
+  .hero{grid-column:1/3}
+  .hero .lbl{color:var(--muted);text-transform:uppercase;letter-spacing:.14em;font-size:clamp(11px,.85vw,20px)}
+  .hero .nombre{font-size:clamp(28px,3.4vw,72px);font-weight:800;margin:.1em 0;display:flex;align-items:center;gap:.4em;flex-wrap:wrap}
+  .hero .cand{color:var(--ink2);font-size:clamp(14px,1.3vw,30px)}
+  .hero .cifras{display:flex;gap:2vw;align-items:baseline;margin-top:.6vh;flex-wrap:wrap}
+  .hero .big{font-size:clamp(36px,4.2vw,96px);font-weight:800;line-height:1}
+  .hero .big small{font-size:.35em;color:var(--ink2);font-weight:600;margin-left:.2em}
+  .badge{display:inline-block;padding:.35em .9em;border-radius:10px;font-weight:800;font-size:clamp(13px,1.1vw,26px)}
+  .badge.ok{background:rgba(12,163,12,.22);color:#8af08a} .badge.warn{background:rgba(250,178,25,.18);color:#ffd36b}
+  .kpis{display:grid;grid-template-columns:1fr 1fr;gap:1vh 1vw;align-content:start}
+  .kpi{background:var(--card);border:1px solid var(--grid);border-radius:14px;padding:1.2vh 1vw}
+  .kpi .v{font-size:clamp(26px,2.6vw,60px);font-weight:800;line-height:1.05}
+  .kpi .v small{font-size:.45em;color:var(--ink2);font-weight:600}
+  .kpi .k{color:var(--muted);font-size:clamp(11px,.85vw,20px);text-transform:uppercase;letter-spacing:.1em;margin-top:.3em}
+  .ring{--p:0;width:clamp(56px,4.6vw,110px);height:clamp(56px,4.6vw,110px);border-radius:50%;background:conic-gradient(var(--accent) calc(var(--p)*1%),var(--neutral) 0);display:grid;place-items:center;float:right}
+  .ring span{width:72%;height:72%;border-radius:50%;background:var(--card);display:grid;place-items:center;font-weight:800;font-size:clamp(12px,1vw,24px)}
+  .bars{grid-column:1/2;display:flex;flex-direction:column}
+  .proy{display:flex;flex-direction:column;min-height:0;overflow:auto}
+  .proy h2{margin:0 0 .6vh;font-size:clamp(12px,.95vw,22px);color:var(--muted);text-transform:uppercase;letter-spacing:.14em;font-weight:700}
+  .proy table{font-size:.9em} .proy th,.proy td{padding:.25em .3em;border-bottom:1px solid var(--grid)} .proy .dot{width:.7em;height:.7em;border-radius:3px;display:inline-block;vertical-align:-.05em}
+  .proy .muted{color:var(--muted)} .proy .alert{padding:.8em;border-radius:10px;background:rgba(57,135,229,.12);color:var(--ink2)}
+  .bars h2,.mesas h2,.ticker h2{margin:0 0 .6vh;font-size:clamp(12px,.95vw,22px);color:var(--muted);text-transform:uppercase;letter-spacing:.14em;font-weight:700}
+  .lista{flex:1;display:flex;flex-direction:column;justify-content:space-evenly;min-height:0}
+  .fila{display:grid;grid-template-columns:minmax(0,14em) 1fr minmax(0,8em);gap:.8vw;align-items:center;padding:.2vh 0}
+  .fila .id{display:flex;align-items:center;gap:.5em;min-width:0}
+  .chip{width:.8em;height:.8em;border-radius:3px;flex:none}
+  .fila .sig{font-weight:800} .fila .cand{color:var(--ink2);font-size:.85em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .track{height:clamp(14px,1.6vh,30px);background:var(--neutral);border-radius:5px;overflow:hidden}
+  .fill{height:100%;border-radius:5px;background:var(--neutral2,#5b6270);transition:width .8s cubic-bezier(.2,.8,.2,1)}
+  .fila.lider .fill{background:var(--accent)}
+  .fila .val{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap} .fila .val b{font-size:1.15em}
+  .resto{color:var(--muted);font-size:.9em;margin-top:.6vh}
+  .mesas{display:flex;flex-direction:column;min-height:0}
+  .grid-mesas{display:flex;flex-wrap:wrap;gap:.35vw;align-content:flex-start;overflow:hidden;flex:1}
+  .mesa{width:clamp(30px,2.4vw,56px);height:clamp(30px,2.4vw,56px);border-radius:6px;background:var(--neutral);display:grid;place-items:center;font-size:clamp(8px,.55vw,13px);color:var(--ink2);border:2px solid transparent}
+  .mesa.inst{border-color:var(--accent)} .mesa.acta{background:rgba(12,163,12,.35);border-color:var(--good);color:#fff}
+  .mesa.obs{background:rgba(208,59,59,.4);border-color:var(--crit);color:#fff} .mesa.no{background:rgba(208,59,59,.15);border-color:var(--crit);color:#ffb3b3}
+  .leyenda{display:flex;gap:1vw;flex-wrap:wrap;color:var(--ink2);font-size:.85em;margin-top:.8vh}
+  .leyenda i{display:inline-block;width:.9em;height:.9em;border-radius:3px;vertical-align:-.1em;margin-right:.3em;border:2px solid transparent}
+  .ritmo{display:flex;align-items:flex-end;gap:2px;height:clamp(30px,5vh,80px);margin-top:.8vh}
+  .ritmo div{flex:1;background:var(--accent);opacity:.8;border-radius:3px 3px 0 0;min-height:2px}
+  .ticker{grid-column:1/4;display:flex;gap:1vw;align-items:center;white-space:nowrap;overflow:hidden;padding:.9vh 1.4vw}
+  .ticker .items{display:flex;gap:2.5vw;animation:desliza 40s linear infinite}
+  .ticker .items span b{color:#8af08a}
+  @keyframes desliza{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+  .vacio{color:var(--muted);padding:2vh 0;text-align:center;font-size:1.1em}
+  #tabla{position:fixed;inset:6vh 8vw;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:2vh 2vw;overflow:auto;z-index:9;display:none}
+  #tabla table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums} #tabla th,#tabla td{padding:.5em .6em;border-bottom:1px solid var(--grid);text-align:left} #tabla th{color:var(--muted)} #tabla td.n{text-align:right}
+  .hint{position:fixed;right:1.5vw;bottom:1vh;color:var(--muted);font-size:clamp(10px,.75vw,16px)}
+</style>
+</head>
+<body>
+<header class="top">
+  <div><h1 id="t_titulo">🗳️ Conteo Rápido</h1><p id="t_sub">…</p></div>
+  <div class="status"><span id="t_reloj"></span><span id="t_live" class="live">● EN VIVO</span><br><span id="t_upd"></span></div>
+</header>
+<main id="main">
+  <section class="card hero" id="hero"><div class="vacio">Esperando las primeras actas…</div></section>
+  <section class="kpis" id="kpis"></section>
+  <section class="card bars" id="bars"></section>
+  <section class="card proy" id="proy"><h2>Proyección matemática</h2><div id="proy_cont"></div></section>
+  <section class="card mesas" id="mesas"></section>
+  <section class="card ticker" id="ticker"></section>
+</main>
+<div id="tabla"></div>
+<div class="hint">T = tabla · F = pantalla completa · Esc = cerrar</div>
+
+<script src="config.js"></script>
+<script src="comun.js"></script>
+<script>
+/* ===== PANTALLA TV ===== */
+const E = (typeof CONFIG.eleccion === "string" && CONFIG.eleccion) || new URLSearchParams(location.search).get("e") || "";
+SB.url = (CONFIG.supabase.url||"").replace(/\/$/,""); SB.key = CONFIG.supabase.key||"";
+let cfg = CONFIG.partidos ? { nombre: CONFIG.nombre, ubicacion: CONFIG.ubicacion, partidos: CONFIG.partidos, totalMesas: CONFIG.totalMesas||0 } : null;
+let ultimo = null;
+const $ = id => document.getElementById(id);
+const pct = (a, b) => b ? (100 * a / b) : 0;
+
+let tmLeido = false;
+async function cargarCfg(){
+  if (cfg && !tmLeido) { try { const c = await sbFetchConfig(E); if (c && c.total_mesas) cfg.totalMesas = c.total_mesas; } catch(e) {} tmLeido = true; }
+  if (cfg) return;
+  if (!E) throw new Error("Falta la elección (?e=…)");
+  const c = await sbFetchConfig(E); if (!c) throw new Error("Elección no encontrada");
+  cfg = { nombre: c.nombre, ubicacion: c.ubicacion||{}, partidos: c.partidos||[], totalMesas: c.total_mesas||0 };
+}
+function cabecera(){
+  const u = cfg.ubicacion||{};
+  $("t_titulo").textContent = "🗳️ " + (u.distrito || "Conteo Rápido") + " — Conteo rápido";
+  $("t_sub").textContent = `${cfg.nombre||""}${u.provincia ? " · " + lugarDe(u) : ""}`;
+}
+setInterval(() => { $("t_reloj").textContent = new Date().toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }, 1000);
+
+async function refrescar(){
+  $("main").classList.add("cargando");
+  try {
+    await cargarCfg(); cabecera();
+    const [actas, aperturas] = await Promise.all([sbFetchActas(E), sbFetchAperturas(E)]);
+    ultimo = { actas, aperturas }; $("t_live").className = "live"; $("t_live").textContent = "● EN VIVO";
+    $("t_upd").textContent = "actualizado " + new Date().toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    pintar(actas, aperturas);
+  } catch(e) {
+    $("t_live").className = "live off"; $("t_live").textContent = "● SIN CONEXIÓN";
+    if (!ultimo) $("hero").innerHTML = `<div class="vacio">${esc(e.message)}</div>`;
+  } finally { $("main").classList.remove("cargando"); }
+}
+
+function pintar(actas, aperturas){
+  const P = cfg.partidos, tm = cfg.totalMesas || 0;
+  const { rank, blancos, nulos, validos, total } = ranking(actas, P);
+  const nMesas = actas.length, nAper = aperturas.filter(a => a.estado !== "no_aperturada").length, nNo = aperturas.length - nAper;
+  const habiles = actas.reduce((s, a) => s + (+a.habiles||0), 0), particip = pct(total, habiles);
+  const pr = proyeccion(rank, total, nMesas, tm);
+  const lider = rank[0], seg = rank[1];
+  document.documentElement.style.setProperty("--accent", (validos > 0 && lider.color) ? lider.color : "#3987e5");
+
+  // HERO
+  if (validos > 0) {
+    $("hero").innerHTML = `
+      <div class="lbl">Va ganando</div>
+      <div class="nombre"><span class="chip" style="width:.6em;height:.6em;background:${lider.color}"></span>${esc(lider.sigla)} <span class="cand">${esc(lider.candidato || lider.nombre)}</span></div>
+      <div class="cifras">
+        <div class="big">${fmt(lider.v)}<small>votos</small></div>
+        <div class="big">${pct(lider.v, validos).toFixed(1)}%<small>de válidos</small></div>
+        ${seg ? `<div class="big">+${fmt(lider.v - seg.v)}<small>sobre ${esc(seg.sigla)}</small></div>` : ""}
+      </div>
+      <div style="margin-top:1vh"><span class="badge ${pr.irremontable ? "ok" : "warn"}">${pr.irremontable ? "✅ VENTAJA IRREMONTABLE" : "⏳ AÚN NO DEFINIDO"}</span>
+        <span style="color:var(--ink2);margin-left:1vw;font-size:.95em">${esc(pr.texto.replace(/^[✅⏳]\s*/, ""))}</span></div>`;
+  } else $("hero").innerHTML = `<div class="vacio">Esperando las primeras actas…</div>`;
+
+  // KPIs
+  const pRep = tm ? pct(nMesas, tm) : 0;
+  $("kpis").innerHTML = `
+    <div class="kpi">${tm ? `<div class="ring" style="--p:${pRep.toFixed(1)}"><span>${pRep.toFixed(0)}%</span></div>` : ""}<div class="v">${nMesas}<small>${tm ? " / " + tm : " actas"}</small></div><div class="k">Actas reportadas</div></div>
+    <div class="kpi"><div class="v">${nAper}<small>${tm ? " / " + tm : ""}</small></div><div class="k">Mesas instaladas${nNo ? ` · <span style="color:#ff9b9b">${nNo} no abrieron</span>` : ""}</div></div>
+    <div class="kpi"><div class="v">${particip.toFixed(1)}%</div><div class="k">Participación</div></div>
+    <div class="kpi"><div class="v">${fmt(validos)}</div><div class="k">Votos válidos · B ${fmt(blancos)} · N ${fmt(nulos)}</div></div>`;
+
+  // BARRAS (una serie: el líder resaltado, el resto neutro; identidad por chip + nombre)
+  const max = rank[0] ? rank[0].v : 0;
+  $("bars").innerHTML = `<h2>Resultado por partido · votos válidos</h2>` + (validos > 0 ? `<div class="lista">` + rank.map((p, i) => `
+    <div class="fila ${i === 0 ? "lider" : ""}" title="${esc(p.nombre)}: ${fmt(p.v)} votos (${pct(p.v, validos).toFixed(1)}%)">
+      <div class="id"><span class="chip" style="background:${p.color}"></span><span class="sig">${esc(p.sigla)}</span><span class="cand">${esc(p.candidato || p.nombre)}</span></div>
+      <div class="track"><div class="fill" style="width:${max ? (100 * p.v / max) : 0}%"></div></div>
+      <div class="val"><b>${fmt(p.v)}</b> <span style="color:var(--ink2)">${pct(p.v, validos).toFixed(1)}%</span></div></div>`).join("") + `</div>`
+    : `<div class="vacio">Aún no hay votos.</div>`);
+  requestAnimationFrame(() => document.querySelectorAll(".fill").forEach(f => f.style.width = f.style.width)); // dispara la transición
+
+  // PROYECCIÓN
+  renderProyeccion($("proy_cont"), actas, P, tm, true);
+
+  // MESAS
+  const estados = new Map();
+  aperturas.forEach(a => estados.set(a.mesa, a.estado === "no_aperturada" ? "no" : "inst"));
+  actas.forEach(a => estados.set(a.mesa, (a.habiles > 0 && sumaActa(a) > a.habiles) ? "obs" : "acta"));
+  const mesas = [...estados.entries()].sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  const faltan = tm ? Math.max(0, tm - nMesas) : 0;
+  const buckets = ritmo(actas);
+  $("mesas").innerHTML = `<h2>Mesas ${tm ? `· faltan ${faltan}` : ""}</h2>
+    <div class="grid-mesas">${mesas.map(([m, st]) => `<div class="mesa ${st}" title="Mesa ${esc(m)}">${esc(String(m).slice(-3))}</div>`).join("") || `<div class="vacio">Sin mesas aún</div>`}</div>
+    <div class="leyenda"><span><i style="border-color:var(--accent)"></i>instalada</span><span><i style="background:rgba(12,163,12,.35);border-color:var(--good)"></i>acta recibida</span><span><i style="background:rgba(208,59,59,.4);border-color:var(--crit)"></i>observada</span><span><i style="background:rgba(208,59,59,.15);border-color:var(--crit)"></i>no instalada</span></div>
+    ${buckets.length > 1 ? `<h2 style="margin-top:1vh">Ritmo de llegada (por 15 min)</h2><div class="ritmo">${buckets.map(b => `<div style="height:${b.pct}%" title="${b.label}: ${b.n}"></div>`).join("")}</div>` : ""}`;
+
+  // TICKER
+  const ult = [...actas].sort((a, b) => String(b.creado).localeCompare(String(a.creado))).slice(0, 10);
+  const items = ult.map(a => `<span>📄 Mesa <b>${esc(a.mesa)}</b> · ${esc(a.personero || "")} · ${horaCorta(a.creado)} · ${fmt(sumaActa(a))} votos</span>`).join("");
+  $("ticker").innerHTML = ult.length ? `<h2 style="margin:0">Últimas actas</h2><div class="items">${items}${items}</div>` : `<div class="vacio" style="padding:0">Aquí aparecerán las actas conforme lleguen.</div>`;
+
+  // TABLA (vista accesible)
+  $("tabla").innerHTML = `<h2 style="margin:0 0 1vh">Detalle</h2><table><tr><th>#</th><th>Partido</th><th>Candidato/a</th><th class="n">Votos</th><th class="n">%</th></tr>` +
+    rank.map((p, i) => `<tr><td>${i + 1}</td><td>${esc(p.sigla)} · ${esc(p.nombre)}</td><td>${esc(p.candidato || "—")}</td><td class="n">${fmt(p.v)}</td><td class="n">${pct(p.v, validos).toFixed(1)}%</td></tr>`).join("") +
+    `<tr><td></td><td>Válidos</td><td></td><td class="n">${fmt(validos)}</td><td></td></tr><tr><td></td><td>Blancos</td><td></td><td class="n">${fmt(blancos)}</td><td></td></tr><tr><td></td><td>Nulos</td><td></td><td class="n">${fmt(nulos)}</td><td></td></tr><tr><td></td><td><b>Total</b></td><td></td><td class="n"><b>${fmt(total)}</b></td><td></td></tr></table>
+    <p style="color:var(--muted)">Datos NO oficiales — conteo rápido de fiscalización.</p>`;
+}
+function ritmo(actas){
+  const ts = actas.map(a => Date.parse(a.creado)).filter(Boolean).sort((a, b) => a - b); if (ts.length < 2) return [];
+  const paso = 15 * 60 * 1000, ini = Math.floor(ts[0] / paso) * paso, fin = ts[ts.length - 1];
+  const b = []; for (let t = ini; t <= fin; t += paso) b.push({ t, n: 0 });
+  ts.forEach(t => { const i = Math.floor((t - ini) / paso); if (b[i]) b[i].n++; });
+  const mx = Math.max(...b.map(x => x.n), 1);
+  return b.slice(-24).map(x => ({ n: x.n, pct: 100 * x.n / mx, label: new Date(x.t).toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" }) }));
+}
+document.addEventListener("keydown", e => {
+  if (e.key === "t" || e.key === "T") $("tabla").style.display = $("tabla").style.display === "block" ? "none" : "block";
+  if (e.key === "Escape") $("tabla").style.display = "none";
+  if (e.key === "f" || e.key === "F") { document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen(); }
+});
+refrescar(); setInterval(refrescar, 10000);
+</script>
+</body>
+</html>

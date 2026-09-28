@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Conteo Rápido Pacasmayo — Administrador</title>
+<link rel="stylesheet" href="estilos.css">
+</head>
+<body class="admin">
+
+<aside class="side">
+  <div class="brand"><div class="logo">🗳️</div><div><b>Conteo Rápido</b><small>Pacasmayo · Administrador</small></div></div>
+  <nav class="menu">
+    <button data-tab="tablero" class="active">📊 Tablero</button>
+    <button data-tab="reporte">📈 Reporte</button>
+    <button data-tab="actas">📋 Actas</button>
+    <button data-tab="personeros">👥 Personeros</button>
+    <button data-tab="estado">🔑 Estado</button>
+  </nav>
+  <a class="tv" href="pantalla.html" target="_blank">📺 Pantalla para TV</a>
+  <div class="side-foot">
+    <span><i class="estado-dot" id="sf_nube"></i>Nube</span>
+    <span><i class="estado-dot" id="sf_ia"></i>IA lectora</span>
+    <span>v<span id="sf_ver"></span> · <span id="sf_upd">—</span></span>
+  </div>
+</aside>
+
+<div class="content">
+  <header class="topbar">
+    <div><h1 id="tb_titulo">Tablero</h1><p id="tb_sub"></p></div>
+    <div class="tb-actions">
+      <button class="btn ghost sm" onclick="refrescar()">🔄 Actualizar</button>
+      <button class="btn wa sm" onclick="compartirDistrito()">📲 WhatsApp</button>
+      <button class="btn ghost sm" onclick="window.print()">🖨 Imprimir</button>
+    </div>
+  </header>
+  <main>
+    <div id="aviso"></div>
+
+    <!-- ===== TABLERO ===== -->
+    <section id="tablero">
+      <div class="kpi" id="kpi" style="margin-bottom:14px"></div>
+      <div class="grid2">
+        <div class="card"><h2>Resultado por partido <span class="muted" id="t_fuente"></span></h2><div id="barras"></div></div>
+        <div class="card"><h2>📐 Proyección matemática y probabilidades</h2><div id="proy_cont"></div></div>
+      </div>
+      <div class="card"><h2>Alertas</h2><div id="alertas"></div></div>
+    </section>
+
+    <!-- ===== REPORTE ===== -->
+    <section id="reporte" class="hide">
+      <div class="card"><div id="rep_cont"></div></div>
+      <div class="card"><h2>📐 Proyección matemática y probabilidades</h2><div id="proy_cont2"></div></div>
+    </section>
+
+    <!-- ===== ACTAS ===== -->
+    <section id="actas" class="hide">
+      <div class="card">
+        <div class="toolbar" style="justify-content:space-between">
+          <div class="toolbar" style="margin:0"><h2 style="margin:0">Actas recibidas</h2><span class="pill ok" id="n_actas">0</span></div>
+          <div class="toolbar" style="margin:0"><input class="filtro" id="f_actas" placeholder="🔎 Buscar mesa o personero…" oninput="pintarActas()"><button class="btn ghost sm" onclick="exportCSV()">⬇ CSV</button></div>
+        </div>
+        <div style="overflow:auto;max-height:60vh"><table id="tablaActas"></table></div>
+      </div>
+      <div class="card">
+        <h2>Instalación de mesas <span class="pill ok" id="n_aper">0</span></h2>
+        <div style="overflow:auto;max-height:40vh"><table id="tablaAperturas"></table></div>
+      </div>
+    </section>
+
+    <!-- ===== PERSONEROS ===== -->
+    <section id="personeros" class="hide">
+      <div class="card brand">
+        <h2>👥 Cómo entran los personeros</h2>
+        <p>Cada personero abre <b><span id="p_url">personero.html</span></b> en su celular. No necesita configurar nada.</p>
+        <div class="toolbar" style="margin:8px 0 0"><button class="btn" onclick="copiarUrl()">📋 Copiar dirección</button><button class="btn wa" onclick="enviarUrl()">📲 Enviar por WhatsApp</button><span class="muted" id="p_estado"></span></div>
+      </div>
+      <div class="card"><h2>Quiénes ya reportaron</h2><div style="overflow:auto"><table id="tablaPersoneros"></table></div></div>
+    </section>
+
+    <!-- ===== ESTADO ===== -->
+    <section id="estado" class="hide">
+      <div class="card brand"><h2>🪑 Total de mesas del distrito</h2>
+        <p class="muted">Con este número el sistema calcula el % de mesas reportadas, la ventaja irremontable y la proyección. Se guarda en la nube (lo ven el admin y la pantalla TV).</p>
+        <div class="row"><div><label>Total de mesas</label><input id="e_totalmesas" type="number" min="0" inputmode="numeric" placeholder="ej. 45"></div>
+        <div style="display:flex;align-items:flex-end"><button class="btn" onclick="guardarTotalMesas()">💾 Guardar</button></div></div>
+        <p class="muted" id="e_tm_estado"></p></div>
+      <div class="card"><h2>🔑 Estado de la configuración</h2><div id="estado_cont"></div>
+        <p class="muted" style="margin-top:12px">Las claves (nube e IA), los candidatos y el total de mesas se editan en <code>config.js</code>.</p></div>
+    </section>
+  </main>
+</div>
+
+<script src="config.js"></script>
+<script src="comun.js"></script>
+<script>
+/* ===== ADMIN — Pacasmayo (todo viene de config.js) ===== */
+const E = CONFIG.eleccion, partidos = () => CONFIG.partidos;
+let totalMesas = CONFIG.totalMesas || 0; const TM = () => totalMesas;   // se guarda en la nube desde Estado
+SB.url = (CONFIG.supabase.url||"").replace(/\/$/,""); SB.key = CONFIG.supabase.key||"";
+const nubeOK = () => sbListo() && !/XXXX|PEGA_AQUI/.test(SB.url + SB.key);
+const iaOK   = () => !!CONFIG.ia.key && !/PEGA_AQUI/.test(CONFIG.ia.key);
+const $ = id => document.getElementById(id);
+const TITULOS = { tablero:"Tablero", reporte:"Reporte de campaña", actas:"Actas e instalaciones", personeros:"Personeros", estado:"Estado" };
+let tab = "tablero", poll = null, cache = null;
+
+async function iniciar(){
+  if (nubeOK()) { try { const c = await sbFetchConfig(E); if (c && c.total_mesas) totalMesas = c.total_mesas; } catch(e) {} }
+  $("tb_sub").textContent = CONFIG.nombre + " · " + lugarDe(CONFIG.ubicacion);
+  $("p_url").textContent = new URL("personero.html", location.href).href;
+  $("sf_ver").textContent = APP_VERSION;
+  $("sf_nube").className = "estado-dot " + (nubeOK() ? "ok" : "bad"); $("sf_ia").className = "estado-dot " + (iaOK() ? "ok" : "bad");
+  if (!nubeOK()) $("aviso").innerHTML = `<div class="alert warn">⚠ La nube no está configurada en <code>config.js</code>. Sin eso no llegan las actas de los personeros.</div>`;
+  activarTab("tablero");
+}
+function activarTab(t){
+  tab = t; document.querySelectorAll(".menu button").forEach(b => b.classList.toggle("active", b.dataset.tab === t));
+  ["tablero","reporte","actas","personeros","estado"].forEach(s => $(s).classList.toggle("hide", s !== t));
+  $("tb_titulo").textContent = TITULOS[t] || t;
+  if (poll) { clearInterval(poll); poll = null; }
+  refrescar(); if (t === "tablero" || t === "reporte") poll = setInterval(refrescar, 15000);
+}
+document.querySelectorAll(".menu button").forEach(b => b.onclick = () => activarTab(b.dataset.tab));
+
+async function datos(){
+  if (!nubeOK()) throw new Error("Nube no configurada (config.js).");
+  const [actas, aperturas] = await Promise.all([sbFetchActas(E), sbFetchAperturas(E)]);
+  cache = { actas, aperturas }; $("sf_upd").textContent = "act. " + horaCorta(ahora()); return cache;
+}
+async function refrescar(){
+  if (tab === "tablero") return pintarTablero();
+  if (tab === "reporte") return pintarReporte();
+  if (tab === "actas") return pintarActas();
+  if (tab === "personeros") return pintarPersoneros();
+  if (tab === "estado") return pintarEstado();
+}
+const errorEn = (id, e) => { $(id).innerHTML = `<div class="alert info">${esc(e.message)}</div>`; };
+
+/* ---- tablero ---- */
+async function pintarTablero(){
+  let d; try { d = await datos(); } catch(e) { errorEn("kpi", e); $("barras").innerHTML = ""; $("proy_cont").innerHTML = ""; $("alertas").innerHTML = ""; return; }
+  const { actas, aperturas } = d, tm = TM();
+  const { rank, blancos, nulos, validos, total } = ranking(actas, partidos());
+  const nMesas = actas.length, nAper = aperturas.filter(a => a.estado !== "no_aperturada").length, nNo = aperturas.length - nAper;
+  const habiles = actas.reduce((s, a) => s + (+a.habiles || 0), 0), particip = habiles ? 100 * total / habiles : 0;
+  $("kpi").innerHTML = `
+    <div><b>${nAper}</b><span>mesas instaladas${nNo ? ` · <span style="color:var(--bad)">${nNo} no abrieron</span>` : ""}</span></div>
+    <div><b>${nMesas}${tm ? `<small style="font-size:14px;color:var(--muted)"> / ${tm}</small>` : ""}</b><span>actas reportadas${tm ? ` · ${(100*nMesas/tm).toFixed(1)}%` : ""}</span></div>
+    <div><b>${particip.toFixed(1)}%</b><span>participación</span></div>
+    <div><b>${fmt(validos)}</b><span>votos válidos</span></div>
+    <div><b>${fmt(total)}</b><span>total emitidos · B ${fmt(blancos)} · N ${fmt(nulos)}</span></div>`;
+  $("t_fuente").textContent = `· ${nMesas} actas`;
+  const max = rank[0] ? rank[0].v : 0;
+  $("barras").innerHTML = validos > 0 ? rank.map((p, i) => { const w = max ? 100 * p.v / max : 0, lider = i === 0;
+    return `<div style="margin:9px 0"><div style="display:flex;justify-content:space-between;font-size:13px;gap:8px">
+      <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><span class="dot" style="background:${p.color}"></span> ${lider ? "🏆 " : ""}<b>${esc(p.sigla)}</b> <span class="muted">${esc(p.candidato || p.nombre)}</span>${lider ? ' <span class="pill ok">VA GANANDO</span>' : ""}</span>
+      <span style="white-space:nowrap"><b>${fmt(p.v)}</b> · ${(100*p.v/validos).toFixed(1)}%</span></div>
+      <div class="bar-track" style="height:16px"><div class="bar-fill" style="width:${w}%;background:${lider ? p.color : "#8b93a3"}"></div></div></div>`; }).join("")
+    : `<p class="muted">Aún no hay votos cargados.</p>`;
+  renderProyeccion($("proy_cont"), actas, partidos(), tm, false);
+  const al = alertasDe(actas);
+  $("alertas").innerHTML = al.length ? al.map(x => `<div class="alert bad">⚠ ${esc(x)}</div>`).join("") : `<div class="alert ok">✓ Sin anomalías detectadas.</div>`;
+}
+
+/* ---- reporte ---- */
+async function pintarReporte(){
+  let d; try { d = await datos(); } catch(e) { errorEn("rep_cont", e); $("proy_cont2").innerHTML = ""; return; }
+  renderReporte($("rep_cont"), { actas: d.actas, aperturas: d.aperturas, partidos: partidos(), nombre: CONFIG.nombre, lugar: lugarDe(CONFIG.ubicacion), totalMesas: TM(), fuente: "☁️ todas las mesas" });
+  renderProyeccion($("proy_cont2"), d.actas, partidos(), TM(), false);
+}
+async function compartirDistrito(){
+  try { const d = cache || await datos(); const r = ranking(d.actas, partidos());
+    compartirTexto(textoReporteDistrito({ nombre: CONFIG.nombre, lugar: CONFIG.ubicacion.distrito, ...r, nMesas: d.actas.length, totalMesas: TM(), nAper: d.aperturas.filter(a => a.estado !== "no_aperturada").length }));
+  } catch(e) { alert(e.message); }
+}
+
+/* ---- actas ---- */
+async function pintarActas(){
+  const t1 = $("tablaActas"), t2 = $("tablaAperturas");
+  let d; try { d = await datos(); } catch(e) { t1.innerHTML = `<tr><td class="muted">${esc(e.message)}</td></tr>`; t2.innerHTML = ""; return; }
+  const f = ($("f_actas").value || "").toLowerCase();
+  const actas = d.actas.filter(a => !f || String(a.mesa).toLowerCase().includes(f) || (a.personero || "").toLowerCase().includes(f));
+  $("n_actas").textContent = d.actas.length; $("n_aper").textContent = d.aperturas.length;
+  t1.innerHTML = `<tr><th>Mesa</th><th>Personero</th><th>Hora</th><th class="num">Hábiles</th><th class="num">Total</th><th>Estado</th><th>Foto</th><th></th></tr>` +
+    (actas.length ? actas.map(a => { const s = sumaActa(a); const obs = a.habiles > 0 && s > a.habiles;
+      return `<tr><td><b>${esc(a.mesa)}</b></td><td>${esc(a.personero || "—")}</td><td>${horaCorta(a.creado)}</td><td class="num">${a.habiles || "—"}</td><td class="num">${s}</td>
+        <td>${obs ? '<span class="pill warn">observada</span>' : '<span class="pill ok">ok</span>'}</td>
+        <td>${a.foto_url ? `<a href="${esc(a.foto_url)}" target="_blank">ver</a>` : "—"}</td>
+        <td><button class="btn danger sm" onclick="borrarActa('${esc(a.mesa)}')">🗑</button></td></tr>`; }).join("")
+     : `<tr><td colspan="8" class="muted">${f ? "Sin resultados para ese filtro." : "Sin actas todavía."}</td></tr>`);
+  t2.innerHTML = `<tr><th>Mesa</th><th>Estado</th><th>Hora</th><th>Personero</th><th></th></tr>` +
+    (d.aperturas.length ? d.aperturas.map(a => `<tr><td><b>${esc(a.mesa)}</b></td><td>${a.estado === "no_aperturada" ? '<span class="pill bad">NO instalada</span>' : '<span class="pill ok">instalada</span>'}</td><td>${horaCorta(a.hora)}</td><td>${esc(a.personero || "—")}</td>
+        <td><button class="btn danger sm" onclick="borrarApertura('${esc(a.mesa)}')">🗑</button></td></tr>`).join("")
+     : `<tr><td colspan="5" class="muted">Ninguna mesa marcada aún.</td></tr>`);
+}
+async function borrarActa(mesa){ if (!confirm(`¿Borrar el acta de la mesa ${mesa}? El personero podrá volver a enviarla.`)) return; try { await sbBorrarActa(E, mesa); pintarActas(); } catch(e) { alert(e.message); } }
+async function borrarApertura(mesa){ if (!confirm(`¿Borrar la instalación de la mesa ${mesa}?`)) return; try { await sbBorrarApertura(E, mesa); pintarActas(); } catch(e) { alert(e.message); } }
+async function exportCSV(){
+  let d; try { d = await datos(); } catch(e) { alert(e.message); return; }
+  const cols = ["mesa","electores_habiles","personero","reportado_en","hash","blancos","nulos", ...partidos().map(p => p.sigla)];
+  const filas = d.actas.map(a => [a.mesa, a.habiles, `"${(a.personero || "").replace(/"/g, '""')}"`, a.creado, a.hash || "", a.blancos, a.nulos, ...partidos().map(p => (a.votos || {})[p.sigla] || 0)].join(","));
+  bajar([cols.join(","), ...filas].join("\n"), "actas_pacasmayo.csv", "text/csv");
+}
+
+/* ---- personeros ---- */
+async function copiarUrl(){ const ok = await copiar($("p_url").textContent); $("p_estado").textContent = ok ? "✓ copiada" : "no se pudo copiar"; }
+function enviarUrl(){ compartirTexto(`🗳️ ${CONFIG.nombre}\n\nHola personero/a: el día de la elección abre esta dirección en tu celular, pon tu nombre y mesa, marca la instalación y sube el acta con foto.\n\n${$("p_url").textContent}\n\n¡Gracias por fiscalizar!`); }
+async function pintarPersoneros(){
+  const t = $("tablaPersoneros");
+  let d; try { d = await datos(); } catch(e) { t.innerHTML = `<tr><td class="muted">${esc(e.message)}</td></tr>`; return; }
+  const m = new Map();
+  d.aperturas.forEach(a => m.set(a.mesa, Object.assign(m.get(a.mesa) || { mesa: a.mesa }, { personero: a.personero, instal: a.hora, estado: a.estado })));
+  d.actas.forEach(a => m.set(a.mesa, Object.assign(m.get(a.mesa) || { mesa: a.mesa }, { personero: a.personero || (m.get(a.mesa) || {}).personero, acta: a.creado })));
+  const rows = [...m.values()].sort((a, b) => String(a.mesa).localeCompare(String(b.mesa)));
+  t.innerHTML = `<tr><th>Mesa</th><th>Personero</th><th>Instalación</th><th>Acta</th></tr>` +
+    (rows.length ? rows.map(r => `<tr><td><b>${esc(r.mesa)}</b></td><td>${esc(r.personero || "—")}</td><td>${r.instal ? (r.estado === "no_aperturada" ? "❌ " : "✅ ") + horaCorta(r.instal) : "—"}</td><td>${r.acta ? "📄 " + horaCorta(r.acta) : '<span class="muted">pendiente</span>'}</td></tr>`).join("")
+     : `<tr><td colspan="4" class="muted">Nadie ha reportado todavía.</td></tr>`);
+}
+
+/* ---- estado ---- */
+async function guardarTotalMesas(){
+  const n = +$("e_totalmesas").value || 0, est = $("e_tm_estado");
+  if (!nubeOK()) { est.textContent = "La nube no está configurada."; return; }
+  est.textContent = "Guardando…";
+  try { await sbUpsertConfig({ eleccion: E, nombre: CONFIG.nombre, ubicacion: CONFIG.ubicacion, total_mesas: n, actualizado: ahora() }); totalMesas = n;
+        est.textContent = n ? `✓ Guardado: ${n} mesas.` : "✓ Guardado (sin total: no se calcula el %)."; pintarEstado(); }
+  catch(e) { est.textContent = "❌ " + e.message; }
+}
+async function pintarEstado(){
+  const el = $("estado_cont"); $("e_totalmesas").value = TM() || "";
+  let nube = "⚠ falta poner URL y anon key en config.js";
+  if (nubeOK()) { try { const a = await sbFetchActas(E); nube = `✅ conectada (${a.length} actas)`; } catch(e) { nube = "❌ error: " + e.message; } }
+  el.innerHTML = `<table>
+    <tr><th>Elección</th><td>${esc(CONFIG.nombre)}<br><span class="muted">${esc(E)}</span></td></tr>
+    <tr><th>Candidatos</th><td>${partidos().length} partidos cargados</td></tr>
+    <tr><th>Total de mesas</th><td>${TM() || '<span class="pill warn">no definido</span> — ponlo arriba'}</td></tr>
+    <tr><th>Nube (Supabase)</th><td>${nube}</td></tr>
+    <tr><th>IA (Gemini)</th><td>${iaOK() ? `✅ configurada · modelo ${esc(CONFIG.ia.modelo)} (con respaldo automático)` : "⚠ falta la clave en config.js"}</td></tr>
+    <tr><th>Versión</th><td>${APP_VERSION}</td></tr></table>`;
+}
+iniciar();
+</script>
+</body>
+</html>

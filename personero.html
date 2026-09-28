@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Conteo Rápido Pacasmayo — Personero</title>
+<link rel="stylesheet" href="estilos.css">
+</head>
+<body>
+<header>
+  <h1 id="hdr_titulo">🗳️ Pacasmayo — Personero</h1>
+  <p id="hdr_sub"></p>
+</header>
+
+<div class="wrap narrow">
+  <div id="aviso"></div>
+
+  <div class="card">
+    <h2>👤 Tú</h2>
+    <div class="row">
+      <div><label>Tu nombre</label><input id="c_personero" placeholder="Nombre y apellido" oninput="guardarYo()"></div>
+      <div><label>N° de tu mesa</label><input id="c_mesa" placeholder="ej. 045527" inputmode="numeric" oninput="guardarYo()"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>🕐 Instalación de la mesa (mañana)</h2>
+    <p class="muted">Apenas se instale tu mesa, márcalo. Se guarda la hora automáticamente.</p>
+    <div class="toolbar" style="margin:0">
+      <button class="btn ok" onclick="aperturarMesa('aperturada')">✅ Mi mesa se instaló</button>
+      <button class="btn ghost" onclick="aperturarMesa('no_aperturada')">❌ NO se instaló</button>
+    </div>
+    <p class="muted" id="c_apertura_estado"></p>
+  </div>
+
+  <div class="card brand">
+    <h2>📸 Acta de escrutinio (tarde)</h2>
+    <p class="muted">Cuando la mesa termine de contar, toma la foto del acta y deja que la IA llene los números. Revísalos y guarda.</p>
+    <label>Foto del acta</label>
+    <input id="c_foto" type="file" accept="image/*">
+    <div class="toolbar" style="margin:8px 0"><button class="btn" onclick="leerActa()">🤖 Leer números con IA</button></div>
+    <p class="muted" id="c_ia_estado"></p>
+    <div id="c_dudas"></div>
+    <label>Electores hábiles</label><input id="c_habiles" type="number" min="0" inputmode="numeric">
+    <div id="c_partidos"></div>
+    <div class="row">
+      <div><label>Votos en blanco</label><input id="c_blancos" type="number" min="0" value="0" inputmode="numeric" oninput="recalcTotal()"></div>
+      <div><label>Votos nulos</label><input id="c_nulos" type="number" min="0" value="0" inputmode="numeric" oninput="recalcTotal()"></div>
+    </div>
+    <div id="c_total" class="total-box"></div>
+    <div style="margin-top:12px"><button class="btn big" onclick="guardarActa()">💾 Guardar y enviar acta</button></div>
+    <div class="toolbar" style="margin-top:8px"><button class="btn wa sm" onclick="compartirMiMesa()">📲 Compartir mi mesa</button></div>
+    <p class="muted" id="c_resumen"></p>
+  </div>
+
+  <div class="card">
+    <div class="toolbar" style="margin:0">
+      <button class="btn ghost sm" onclick="subirPendientes()">⬆ Subir pendientes (<span id="n_pend">0</span>)</button>
+      <button class="btn ghost sm" onclick="exportRespaldo()">⬇ Respaldo</button>
+    </div>
+    <p class="muted" id="op_estado"></p>
+  </div>
+</div>
+
+<script src="config.js"></script>
+<script src="comun.js"></script>
+<script>
+/* ===== PERSONERO — Pacasmayo (todo viene de config.js) ===== */
+const LS_P = "cr_pacasmayo_personero_v1";
+let db = cargarLS(LS_P, { nombre:"", mesa:"", actas:[], aperturas:[] });
+function persistir(){ if(!guardarLS(LS_P, db)) document.getElementById("op_estado").textContent="⚠ No se pudo guardar en este celular."; }
+const E = CONFIG.eleccion, partidos = () => CONFIG.partidos;
+SB.url = (CONFIG.supabase.url||"").replace(/\/$/,""); SB.key = CONFIG.supabase.key||"";
+const nubeOK = () => sbListo() && !/XXXX|PEGA_AQUI/.test(SB.url + SB.key);
+const iaOK   = () => !!CONFIG.ia.key && !/PEGA_AQUI/.test(CONFIG.ia.key);
+
+(function iniciar(){
+  document.getElementById("hdr_sub").textContent = CONFIG.nombre;
+  document.getElementById("c_personero").value = db.nombre; document.getElementById("c_mesa").value = db.mesa;
+  document.getElementById("c_partidos").innerHTML = "<label>Votos por partido</label>" + partidos().map(p =>
+    `<div class="partido-row"><span><span class="dot" style="background:${p.color}"></span> <b>${esc(p.sigla)}</b> <span class="muted">${esc(p.nombre)}${p.candidato?" · "+esc(p.candidato):""}</span></span>
+     <input type="number" min="0" value="0" id="v_${esc(p.sigla)}" inputmode="numeric" oninput="recalcTotal()"></div>`).join("");
+  const avisos = [];
+  if (!nubeOK()) avisos.push("La nube no está configurada (config.js). Tus actas se guardan solo en este celular.");
+  if (!iaOK()) avisos.push("La lectura con IA no está configurada (config.js). Ingresa los números a mano.");
+  document.getElementById("aviso").innerHTML = avisos.map(a => `<div class="alert warn">⚠ ${esc(a)}</div>`).join("");
+  recalcTotal(); contarPendientes();
+})();
+function guardarYo(){ db.nombre = document.getElementById("c_personero").value.trim(); db.mesa = document.getElementById("c_mesa").value.trim(); persistir(); }
+function recalcTotal(){
+  let val = 0; partidos().forEach(p => { const el = document.getElementById("v_"+p.sigla); if (el) val += +el.value || 0; });
+  const b = +document.getElementById("c_blancos").value || 0, n = +document.getElementById("c_nulos").value || 0;
+  document.getElementById("c_total").innerHTML = `✅ Votos válidos: <b>${val}</b> · Blancos: ${b} · Nulos: ${n} · <b>Total: ${val+b+n}</b>`;
+}
+function contarPendientes(){ document.getElementById("n_pend").textContent = db.actas.filter(a=>!a.subida).length + db.aperturas.filter(a=>!a.subida).length; }
+function leerFormulario(){
+  const votos = {}; partidos().forEach(p => votos[p.sigla] = +document.getElementById("v_"+p.sigla).value || 0);
+  return { mesa: db.mesa, habiles: +document.getElementById("c_habiles").value || 0, votos,
+           blancos: +document.getElementById("c_blancos").value || 0, nulos: +document.getElementById("c_nulos").value || 0, personero: db.nombre };
+}
+
+/* instalación */
+async function aperturarMesa(estado){
+  guardarYo(); const est = document.getElementById("c_apertura_estado");
+  if (!db.mesa) { est.textContent = "Primero pon tu N° de mesa arriba."; return; }
+  const ap = { mesa: db.mesa, estado, hora: ahora(), personero: db.nombre, subida: false };
+  const i = db.aperturas.findIndex(a => a.mesa === ap.mesa); if (i >= 0) db.aperturas[i] = ap; else db.aperturas.push(ap); persistir();
+  let nube = "";
+  if (nubeOK()) { try { await sbUpsertApertura(E, ap); ap.subida = true; persistir(); nube = " · ☁️ enviado"; } catch(e) { nube = " · ⚠ sin señal, se enviará luego"; } }
+  est.innerHTML = (estado === "aperturada" ? `✅ Mesa ${esc(db.mesa)} instalada a las ${horaCorta(ap.hora)}` : `❌ Mesa ${esc(db.mesa)} marcada como NO instalada (${horaCorta(ap.hora)})`) + nube;
+  contarPendientes();
+}
+
+/* IA */
+async function leerActa(){
+  guardarYo(); const est = document.getElementById("c_ia_estado"), dud = document.getElementById("c_dudas");
+  const foto = document.getElementById("c_foto").files[0];
+  if (!foto) { est.textContent = "Primero toma o selecciona la foto del acta."; return; }
+  if (!iaOK()) { est.textContent = "La IA no está configurada. Ingresa los números a mano."; return; }
+  dud.innerHTML = "";
+  try {
+    const { json, modeloUsado } = await leerActaConIA({ foto, partidos: partidos(), clave: CONFIG.ia.key, modelo: CONFIG.ia.modelo, disponibles: CONFIG.ia.modelos, onEstado: t => est.textContent = "⏳ " + t });
+    if (json.mesa) { document.getElementById("c_mesa").value = String(json.mesa).trim(); guardarYo(); }
+    if (json.habiles) document.getElementById("c_habiles").value = json.habiles;
+    partidos().forEach(p => { if (json.votos && p.sigla in json.votos) document.getElementById("v_"+p.sigla).value = +json.votos[p.sigla] || 0; });
+    if ("blancos" in json) document.getElementById("c_blancos").value = +json.blancos || 0;
+    if ("nulos" in json) document.getElementById("c_nulos").value = +json.nulos || 0;
+    recalcTotal();
+    est.textContent = `✓ Leído con ${modeloUsado}. REVISA cada número contra la foto antes de guardar.`;
+    if (Array.isArray(json.dudas) && json.dudas.length) dud.innerHTML = `<div class="alert warn">⚠ Revisa: ${json.dudas.map(esc).join(" · ")}</div>`;
+  } catch(e) { est.textContent = "❌ " + e.message; }
+}
+
+/* guardar y enviar */
+async function guardarActa(){
+  guardarYo();
+  if (!db.mesa) { alert("Falta tu N° de mesa."); return; }
+  if (!db.nombre) { alert("Pon tu nombre arriba."); return; }
+  const acta = leerFormulario(); acta.ts = ahora(); acta.subida = false;
+  const suma = sumaActa(acta);
+  if (suma === 0 && !confirm("El acta tiene 0 votos. ¿Guardar igual?")) return;
+  if (acta.habiles > 0 && suma > acta.habiles && !confirm(`Ojo: ${suma} votos es MÁS que ${acta.habiles} electores hábiles. ¿Guardar igual?`)) return;
+  const i = db.actas.findIndex(a => a.mesa === acta.mesa);
+  if (i >= 0 && !confirm(`Ya guardaste el acta de la mesa ${acta.mesa}. ¿Reemplazarla?`)) return;
+  acta.hash = await hashActa(acta, partidos());
+  const foto = document.getElementById("c_foto").files[0];
+  if (i >= 0) db.actas[i] = acta; else db.actas.push(acta); persistir();
+  const res = document.getElementById("c_resumen"); res.textContent = "Enviando…";
+  let msg = `✓ Acta ${acta.mesa} guardada (${suma} votos)`;
+  if (nubeOK()) {
+    if (foto) { try { acta.foto_url = await sbSubirFoto(E, acta.mesa, await comprimirImagen(foto)); } catch(e) { msg += " · foto no subida"; } }
+    try { await sbUpsertActa(E, acta); acta.subida = true; persistir(); msg += " · ☁️ enviada al comando"; }
+    catch(e) { msg += " · ⚠ sin señal: toca “Subir pendientes” cuando tengas internet"; }
+  } else msg += " · (solo en este celular)";
+  res.textContent = msg; contarPendientes();
+}
+async function subirPendientes(){
+  const est = document.getElementById("op_estado");
+  if (!nubeOK()) { est.textContent = "La nube no está configurada."; return; }
+  let ok = 0, fail = 0;
+  for (const a of db.aperturas.filter(x => !x.subida)) { try { await sbUpsertApertura(E, a); a.subida = true; ok++; } catch(e) { fail++; } }
+  for (const a of db.actas.filter(x => !x.subida)) { try { await sbUpsertActa(E, a); a.subida = true; ok++; } catch(e) { fail++; } }
+  persistir(); contarPendientes();
+  est.textContent = ok + fail === 0 ? "Nada pendiente ✓" : `Subidos: ${ok}${fail ? " · fallaron: " + fail : ""}`;
+}
+function compartirMiMesa(){
+  guardarYo(); const f = leerFormulario();
+  compartirTexto(textoMiMesa({ mesa: f.mesa || "(sin N°)", lugar: CONFIG.ubicacion.distrito, personero: f.personero, partidos: partidos(), votos: f.votos, blancos: f.blancos, nulos: f.nulos }));
+}
+function exportRespaldo(){ bajar(JSON.stringify({ nombre: db.nombre, mesa: db.mesa, actas: db.actas, aperturas: db.aperturas }, null, 2), "mis_actas_pacasmayo.json", "application/json"); }
+</script>
+</body>
+</html>
