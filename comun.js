@@ -5,7 +5,7 @@
    y reportes para WhatsApp.
    ===================================================================== */
 "use strict";
-const APP_VERSION = "1.3.0";
+const APP_VERSION = "1.4.0";
 
 /* ---------- utilidades ---------- */
 const esc = s => String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
@@ -247,7 +247,20 @@ const sbFetchConfigs   = () => sbGet(`config?select=eleccion,nombre,ubicacion,to
   .then(l => l.filter(c => !String(c.eleccion || "").startsWith("_")));   // "_ia" guarda las claves de IA: no es una elección
 const sbBorrarConfig   = e => sbDelete("config", `eleccion=eq.${encodeURIComponent(e)}`);
 const sbUpsertConfig   = cfg => sbUpsert("config", [cfg], "eleccion");
-const sbUpsertActa     = (e, a) => sbUpsert("actas", [{ eleccion: e, mesa: a.mesa, habiles: a.habiles, votos: a.votos, blancos: a.blancos, nulos: a.nulos, personero: a.personero, hash: a.hash, foto_url: a.foto_url || null }], "eleccion,mesa");
+// Sube el acta. Los datos del voto son lo importante: si las columnas de entrenamiento (ia_*) todavía no
+// existen en Supabase (falta correr supabase_entrenamiento.sql), reintenta SIN ellas para no perder el acta.
+async function sbUpsertActa(e, a){
+  const base = { eleccion: e, mesa: a.mesa, habiles: a.habiles, votos: a.votos, blancos: a.blancos, nulos: a.nulos,
+                 personero: a.personero, hash: a.hash, foto_url: a.foto_url || null };
+  const extra = a.ia ? { ia_lectura: a.ia.lectura || null, ia_modelo: a.ia.modelo || null, ia_proveedor: a.ia.proveedor || null,
+                         ia_segundos: a.ia.segundos || null, corregida: !!a.ia.corregida } : null;
+  if (!extra) return sbUpsert("actas", [base], "eleccion,mesa");
+  try { return await sbUpsert("actas", [Object.assign({}, base, extra)], "eleccion,mesa"); }
+  catch(err) {
+    if (!/PGRST204|schema cache|column/i.test(err.message)) throw err;
+    return sbUpsert("actas", [base], "eleccion,mesa");     // sin las columnas de entrenamiento
+  }
+}
 const sbUpsertApertura = (e, a) => sbUpsert("aperturas", [{ eleccion: e, mesa: a.mesa, estado: a.estado, hora: a.hora, personero: a.personero }], "eleccion,mesa");
 // Foto del acta → Supabase Storage (bucket público "actas"). Devuelve URL pública o lanza error.
 async function sbSubirFoto(e, mesa, file){
@@ -274,11 +287,13 @@ function detectarProv(clave){
   return "gemini";
 }
 // Modelos con visión de OpenRouter. Los :free no cobran; el de pago solo se usa si todo lo gratis falla.
-const OR_GRATIS = ["google/gemma-4-31b-it:free", "google/gemma-4-26b-a4b-it:free", "openrouter/free",
-                   "dots-studio/dots-3-note-preview:free", "qwen/qwen3.8-27b:free"];
+const OR_GRATIS = ["qwen/qwen3.8-27b:free",                            // 9 s, 100 % en la prueba del 28-sep
+                   "dots-studio/dots-3-note-preview:free",             // 17 s, 100 %
+                   "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", // 23 s, 100 %
+                   "google/gemma-4-31b-it:free", "google/gemma-4-26b-a4b-it:free"];   // buenos, pero suelen estar copados
 const OR_PAGO   = ["anthropic/claude-haiku-4.5"];
 const CLAUDE_MODELOS = ["claude-haiku-4-5-20251001", "claude-sonnet-5"];
-const SIN_JSON  = new Set(["qwen/qwen3.8-27b:free"]);   // no aceptan responder en formato JSON
+const SIN_JSON  = new Set(["qwen/qwen3.8-27b:free", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"]);   // no aceptan responder en formato JSON
 const esPago = c => PROV[c.prov].pago || OR_PAGO.indexOf(c.m) >= 0;
 
 async function listarModelos(prov, clave){
@@ -461,12 +476,14 @@ async function leerActaConIA({ foto, partidos, clave, claves, modelo, disponible
   const rec = modeloRecordado();
   if (rec && cadena.indexOf(rec) !== 0) { const i = cadena.indexOf(rec); if (i > 0) cadena.splice(i, 1); if (i >= 0) cadena.unshift(rec); }
   // combinaciones clave × modelo, agrupadas por proveedor
-  const combos = [];
-  orden.forEach(k => {
+  const porClave = orden.map(k => {
     const prov = detectarProv(k);
     const ms = prov === "gemini" ? cadena : prov === "openrouter" ? OR_GRATIS.concat(OR_PAGO) : CLAUDE_MODELOS;
-    ms.forEach(m => combos.push({ m, k, prov, id: prov + "|" + m + "|" + k }));
+    return ms.map(m => ({ m, k, prov, id: prov + "|" + m + "|" + k }));
   });
+  // se intercalan las claves: primero el mejor modelo de cada una, después el segundo de cada una, etc.
+  const combos = []; const largo = Math.max(0, ...porClave.map(l => l.length));
+  for (let i = 0; i < largo; i++) porClave.forEach(l => { if (l[i]) combos.push(l[i]); });
   if (rec) { const i = combos.findIndex(c => c.m === rec && !esPago(c)); if (i > 0) combos.unshift(combos.splice(i, 1)[0]); }
   const gratis = combos.filter(c => !esPago(c)), pago = usarPago ? combos.filter(esPago) : [];
 
@@ -542,6 +559,45 @@ async function leerActaConIA({ foto, partidos, clave, claves, modelo, disponible
   }
   if (!esPago(g.c)) { recordarModelo(g.c.m); recordarClave(huellaClave(g.c.k)); }   // no se recuerda el de pago: solo es respaldo
   return { json: g.json, modeloUsado: g.c.m, claveUsada: nombre.get(g.c.k), proveedor: PROV[g.c.prov].nombre, pago: esPago(g.c), avisos: malas };
+}
+
+/* ---------- afinar la IA: comparar su lectura con lo que corrigió el personero ---------- */
+// Devuelve {corregida, campos:{campo:{ia,final}}, aciertos, total} comparando campo por campo.
+function compararLectura(lectura, acta, partidos){
+  const campos = {}; let aciertos = 0, total = 0;
+  const mirar = (nombre, ia, fin) => {
+    total++; const igual = String(ia ?? "") === String(fin ?? "");
+    if (igual) aciertos++; else campos[nombre] = { ia: ia ?? null, final: fin ?? null };
+  };
+  if (!lectura) return null;
+  mirar("mesa", String(lectura.mesa ?? "").trim(), String(acta.mesa ?? "").trim());
+  mirar("habiles", +lectura.habiles || 0, +acta.habiles || 0);
+  mirar("blancos", +lectura.blancos || 0, +acta.blancos || 0);
+  mirar("nulos", +lectura.nulos || 0, +acta.nulos || 0);
+  partidos.forEach(p => mirar(p.sigla, +((lectura.votos || {})[p.sigla]) || 0, +(acta.votos || {})[p.sigla] || 0));
+  return { corregida: aciertos !== total, campos, aciertos, total };
+}
+// Resumen de precisión por modelo a partir de las actas ya guardadas (solo las que traen lectura de la IA).
+function precisionIA(actas, partidos){
+  const por = new Map();
+  (actas || []).forEach(a => {
+    const lec = a.ia_lectura || (a.ia && a.ia.lectura); if (!lec) return;
+    const modelo = a.ia_modelo || (a.ia && a.ia.modelo) || "?";
+    const prov = a.ia_proveedor || (a.ia && a.ia.proveedor) || "";
+    const c = compararLectura(lec, { mesa: a.mesa, habiles: a.habiles, blancos: a.blancos, nulos: a.nulos, votos: a.votos }, partidos);
+    if (!c) return;
+    const k = prov ? prov + " · " + modelo : modelo;
+    const v = por.get(k) || { modelo: k, actas: 0, aciertos: 0, total: 0, corregidas: 0, segundos: [], fallos: new Map() };
+    v.actas++; v.aciertos += c.aciertos; v.total += c.total; if (c.corregida) v.corregidas++;
+    const seg = a.ia_segundos || (a.ia && a.ia.segundos); if (seg) v.segundos.push(+seg);
+    Object.keys(c.campos).forEach(f => v.fallos.set(f, (v.fallos.get(f) || 0) + 1));
+    por.set(k, v);
+  });
+  return [...por.values()].map(v => Object.assign(v, {
+    exactitud: v.total ? v.aciertos / v.total : 0,
+    demora: v.segundos.length ? v.segundos.reduce((a, b) => a + b, 0) / v.segundos.length : 0,
+    peores: [...v.fallos.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3),
+  })).sort((a, b) => b.exactitud - a.exactitud || a.demora - b.demora);
 }
 
 /* ---------- compartir (WhatsApp) ---------- */
