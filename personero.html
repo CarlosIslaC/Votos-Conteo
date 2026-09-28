@@ -60,6 +60,7 @@
     </div>
     <p class="muted" id="op_estado"></p>
   </div>
+  <p class="muted" style="text-align:center;margin:4px 0 16px">Conteo Rápido · v<span id="app_ver"></span></p>
 </div>
 
 <script src="config.js"></script>
@@ -72,17 +73,17 @@ function persistir(){ if(!guardarLS(LS_P, db)) document.getElementById("op_estad
 const E = CONFIG.eleccion, partidos = () => CONFIG.partidos;
 SB.url = (CONFIG.supabase.url||"").replace(/\/$/,""); SB.key = CONFIG.supabase.key||"";
 const nubeOK = () => sbListo() && !/XXXX|PEGA_AQUI/.test(SB.url + SB.key);
-const iaOK   = () => !!CONFIG.ia.key && !/PEGA_AQUI/.test(CONFIG.ia.key);
+const iaOK   = () => nubeOK() || clavesIA(CONFIG.ia).length > 0;   // las claves llegan de la nube (Admin → Estado) o de config.js
 
 (function iniciar(){
-  document.getElementById("hdr_sub").textContent = CONFIG.nombre;
+  document.getElementById("hdr_sub").textContent = CONFIG.nombre; document.getElementById("app_ver").textContent = APP_VERSION;
   document.getElementById("c_personero").value = db.nombre; document.getElementById("c_mesa").value = db.mesa;
   document.getElementById("c_partidos").innerHTML = "<label>Votos por partido</label>" + partidos().map(p =>
     `<div class="partido-row"><span><span class="dot" style="background:${p.color}"></span> <b>${esc(p.sigla)}</b> <span class="muted">${esc(p.nombre)}${p.candidato?" · "+esc(p.candidato):""}</span></span>
      <input type="number" min="0" value="0" id="v_${esc(p.sigla)}" inputmode="numeric" oninput="recalcTotal()"></div>`).join("");
   const avisos = [];
   if (!nubeOK()) avisos.push("La nube no está configurada (config.js). Tus actas se guardan solo en este celular.");
-  if (!iaOK()) avisos.push("La lectura con IA no está configurada (config.js). Ingresa los números a mano.");
+  if (!iaOK()) avisos.push("La lectura con IA no está configurada. Ingresa los números a mano.");
   document.getElementById("aviso").innerHTML = avisos.map(a => `<div class="alert warn">⚠ ${esc(a)}</div>`).join("");
   recalcTotal(); contarPendientes();
 })();
@@ -119,15 +120,19 @@ async function leerActa(){
   if (!iaOK()) { est.textContent = "La IA no está configurada. Ingresa los números a mano."; return; }
   dud.innerHTML = "";
   try {
-    const { json, modeloUsado } = await leerActaConIA({ foto, partidos: partidos(), clave: CONFIG.ia.key, modelo: CONFIG.ia.modelo, disponibles: CONFIG.ia.modelos, onEstado: t => est.textContent = "⏳ " + t });
+    est.textContent = "⏳ Preparando…";
+    const { claves, pago } = await clavesDisponibles(CONFIG.ia);
+    if (!claves.length) { est.textContent = "La IA todavía no tiene claves. Avisa al administrador, o ingresa los números a mano."; return; }
+    const { json, modeloUsado, claveUsada, proveedor, avisos } = await leerActaConIA({ foto, partidos: partidos(), claves, pago, modelo: CONFIG.ia.modelo, disponibles: CONFIG.ia.modelos, onEstado: t => est.textContent = "⏳ " + t });
     if (json.mesa) { document.getElementById("c_mesa").value = String(json.mesa).trim(); guardarYo(); }
     if (json.habiles) document.getElementById("c_habiles").value = json.habiles;
     partidos().forEach(p => { if (json.votos && p.sigla in json.votos) document.getElementById("v_"+p.sigla).value = +json.votos[p.sigla] || 0; });
     if ("blancos" in json) document.getElementById("c_blancos").value = +json.blancos || 0;
     if ("nulos" in json) document.getElementById("c_nulos").value = +json.nulos || 0;
     recalcTotal();
-    est.textContent = `✓ Leído con ${modeloUsado}. REVISA cada número contra la foto antes de guardar.`;
-    if (Array.isArray(json.dudas) && json.dudas.length) dud.innerHTML = `<div class="alert warn">⚠ Revisa: ${json.dudas.map(esc).join(" · ")}</div>`;
+    est.textContent = `✓ Leído con ${proveedor} · ${modeloUsado}${claves.length > 1 ? " · " + claveUsada : ""}. REVISA cada número contra la foto antes de guardar.`;
+    const avisosHtml = (avisos && avisos.length) ? `<div class="alert warn">🔑 ${avisos.map(esc).join(" · ")} — avisa al administrador.</div>` : "";
+    dud.innerHTML = avisosHtml + ((Array.isArray(json.dudas) && json.dudas.length) ? `<div class="alert warn">⚠ Revisa: ${json.dudas.map(esc).join(" · ")}</div>` : "");
   } catch(e) { est.textContent = "❌ " + e.message; }
 }
 
