@@ -73,7 +73,8 @@ function persistir(){ if(!guardarLS(LS_P, db)) document.getElementById("op_estad
 const E = CONFIG.eleccion, partidos = () => CONFIG.partidos;
 SB.url = (CONFIG.supabase.url||"").replace(/\/$/,""); SB.key = CONFIG.supabase.key||"";
 const nubeOK = () => sbListo() && !/XXXX|PEGA_AQUI/.test(SB.url + SB.key);
-const iaOK   = () => nubeOK() || clavesIA(CONFIG.ia).length > 0;   // las claves llegan de la nube (Admin → Estado) o de config.js
+const iaOK   = () => nubeOK() || clavesIA(CONFIG.ia).length > 0;
+let ultimaIA = null;   // última lectura de la IA, para compararla con lo que corrija el personero   // las claves llegan de la nube (Admin → Estado) o de config.js
 
 (function iniciar(){
   document.getElementById("hdr_sub").textContent = CONFIG.nombre; document.getElementById("app_ver").textContent = APP_VERSION;
@@ -118,12 +119,13 @@ async function leerActa(){
   const foto = document.getElementById("c_foto").files[0];
   if (!foto) { est.textContent = "Primero toma o selecciona la foto del acta."; return; }
   if (!iaOK()) { est.textContent = "La IA no está configurada. Ingresa los números a mano."; return; }
-  dud.innerHTML = "";
+  dud.innerHTML = ""; ultimaIA = null; const t0 = Date.now();
   try {
     est.textContent = "⏳ Preparando…";
     const { claves, pago } = await clavesDisponibles(CONFIG.ia);
     if (!claves.length) { est.textContent = "La IA todavía no tiene claves. Avisa al administrador, o ingresa los números a mano."; return; }
     const { json, modeloUsado, claveUsada, proveedor, avisos } = await leerActaConIA({ foto, partidos: partidos(), claves, pago, modelo: CONFIG.ia.modelo, disponibles: CONFIG.ia.modelos, onEstado: t => est.textContent = "⏳ " + t });
+    ultimaIA = { lectura: json, modelo: modeloUsado, proveedor, segundos: +((Date.now() - t0) / 1000).toFixed(1) };
     if (json.mesa) { document.getElementById("c_mesa").value = String(json.mesa).trim(); guardarYo(); }
     if (json.habiles) document.getElementById("c_habiles").value = json.habiles;
     partidos().forEach(p => { if (json.votos && p.sigla in json.votos) document.getElementById("v_"+p.sigla).value = +json.votos[p.sigla] || 0; });
@@ -142,6 +144,10 @@ async function guardarActa(){
   if (!db.mesa) { alert("Falta tu N° de mesa."); return; }
   if (!db.nombre) { alert("Pon tu nombre arriba."); return; }
   const acta = leerFormulario(); acta.ts = ahora(); acta.subida = false;
+  if (ultimaIA) {   // guarda lo que leyó la IA y si hubo que corregirla: sirve para afinarla después
+    const comp = compararLectura(ultimaIA.lectura, acta, partidos());
+    acta.ia = Object.assign({}, ultimaIA, { corregida: comp ? comp.corregida : false });
+  }
   const suma = sumaActa(acta);
   if (suma === 0 && !confirm("El acta tiene 0 votos. ¿Guardar igual?")) return;
   if (acta.habiles > 0 && suma > acta.habiles && !confirm(`Ojo: ${suma} votos es MÁS que ${acta.habiles} electores hábiles. ¿Guardar igual?`)) return;
