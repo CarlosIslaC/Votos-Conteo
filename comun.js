@@ -123,55 +123,105 @@ function proyeccion(rank, total, nMesas, totalMesas){
 // Simula miles de veces las mesas que faltan re-muestreando las mesas ya reportadas.
 // Devuelve, por partido: probabilidad de ganar, votos proyectados y rango 90% del % final;
 // más el margen proyectado del líder actual sobre el segundo. Requiere total de mesas > 0 y >= 3 actas.
+// Proyección por simulación (Monte Carlo) con TRES fuentes de incertidumbre:
+//  1) pocas mesas contadas  → re-muestreo de la muestra (bootstrap);
+//  2) azar de las que faltan → se "llenan" sorteando mesas ya vistas;
+//  3) LAS QUE FALTAN PUEDEN VOTAR DISTINTO → sesgo de llegada: las mesas no llegan en orden
+//     aleatorio (primero las del centro, después las del campo) y eso puede voltear el resultado.
+//     Sin esto la proyección decía 100 % con 4 mesas y se equivocaba; es el error clásico del conteo rápido.
+// El tamaño del sesgo se estima mirando cuánto se movió el resultado entre las primeras mesas y las últimas
+// recibidas, y se reduce a medida que llegan más mesas (con todas contadas, ya no hay sesgo posible).
 function proyeccionMC(actas, partidos, totalMesas, sims = 3000){
   const n = actas.length, T = +totalMesas || 0, R = Math.max(0, T - n);
   if (!T || n < 3) return null;
-  const siglas = partidos.map(p => p.sigla);
+  const siglas = partidos.map(p => p.sigla), P = siglas.length;
   const porMesa = actas.map(a => siglas.map(s => +((a.votos||{})[s]) || 0));
   const base = siglas.map((_, i) => porMesa.reduce((x, m) => x + m[i], 0));
-  const iLider = base.indexOf(Math.max(...base)); const iSeg = base.map((v, i) => i === iLider ? -1 : v).indexOf(Math.max(...base.map((v, i) => i === iLider ? -1 : v)));
+  const iLider = base.indexOf(Math.max(...base));
+  const otros = base.map((v, i) => i === iLider ? -1 : v);
+  const iSeg = otros.indexOf(Math.max(...otros));
+  const fraccion = T ? n / T : 0;                       // parte del distrito ya contada
+
+  // --- deriva observada: ¿el resultado se mueve conforme llegan mesas? ---
+  const cuota = ms => { const t = siglas.map((_, i) => ms.reduce((x, m) => x + m[i], 0)); const s = t.reduce((a, b) => a + b, 0) || 1; return t.map(v => v / s); };
+  const mitad = Math.floor(n / 2);
+  let deriva = 0;
+  if (mitad >= 2) {
+    const a = cuota(porMesa.slice(0, mitad)), b = cuota(porMesa.slice(mitad));
+    deriva = Math.max(...a.map((v, i) => Math.abs(v - b[i])));   // mayor cambio de cuota entre mitades
+  }
+  // Sesgo esperado en las mesas que faltan (en puntos de cuota, desviación típica).
+  // Mínimo 5 puntos cuando falta casi todo; crece si ya se ve deriva; se apaga al completar el conteo.
+  const sigmaSesgo = (1 - fraccion) * Math.max(0.08, deriva * 1.5);
+
   const wins = siglas.map(() => 0), finales = siglas.map(() => []), margenes = [];
   let seed = 20261004; const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const normal = () => { let u = 0, v = 0; while (!u) u = rnd(); while (!v) v = rnd(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+
   for (let k = 0; k < sims; k++) {
     const tot = base.slice();
-    // doble bootstrap: primero re-muestrea la muestra (incertidumbre por pocas mesas), luego "llena" las que faltan
-    const ps = porMesa.map(() => porMesa[Math.floor(rnd() * n)]);
-    for (let r = 0; r < R; r++) { const m = ps[Math.floor(rnd() * n)]; for (let i = 0; i < tot.length; i++) tot[i] += m[i]; }
-    let bi = 0; for (let i = 1; i < tot.length; i++) if (tot[i] > tot[bi]) bi = i;
-    wins[bi]++; const sum = tot.reduce((a, b) => a + b, 0) || 1;
-    tot.forEach((v, i) => finales[i].push(100 * v / sum)); margenes.push(tot[iLider] - (iSeg >= 0 ? tot[iSeg] : 0));
+    const ps = porMesa.map(() => porMesa[Math.floor(rnd() * n)]);        // (1) bootstrap de la muestra
+    // (3) este "universo pendiente" puede inclinarse hacia cualquier partido
+    const swing = siglas.map(() => normal() * sigmaSesgo);
+    const med = swing.reduce((a, b) => a + b, 0) / P;
+    const peso = swing.map(s => Math.max(0.02, 1 + (s - med) * 4));       // factor por partido, siempre positivo
+    for (let r = 0; r < R; r++) {                                        // (2) mesas que faltan
+      const m = ps[Math.floor(rnd() * n)];
+      const inc = m.map((v, i) => v * peso[i]);
+      const sm = m.reduce((a, b) => a + b, 0), si = inc.reduce((a, b) => a + b, 0) || 1;
+      for (let i = 0; i < P; i++) tot[i] += inc[i] * sm / si;            // se conserva el tamaño de la mesa
+    }
+    let bi = 0; for (let i = 1; i < P; i++) if (tot[i] > tot[bi]) bi = i;
+    wins[bi]++;
+    const sum = tot.reduce((a, b) => a + b, 0) || 1;
+    tot.forEach((v, i) => finales[i].push(100 * v / sum));
+    margenes.push(tot[iLider] - (iSeg >= 0 ? tot[iSeg] : 0));
   }
   const q = (arr, p) => { const s = [...arr].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.round(p * (s.length - 1)))]; };
   const promValidos = base.reduce((a, b) => a + b, 0) / n;
-  const res = siglas.map((s, i) => ({ sigla: s, prob: wins[i] / sims, actual: base[i], proyVotos: Math.round(base[i] + R * base[i] / n),
-    p5: q(finales[i], .05), p50: q(finales[i], .5), p95: q(finales[i], .95) })).sort((a, b) => b.prob - a.prob || b.p50 - a.p50);
-  return { n, T, R, sims, pendientesEst: Math.round(R * promValidos), lider: siglas[iLider], segundo: iSeg >= 0 ? siglas[iSeg] : "",
-           margen: { actual: base[iLider] - (iSeg >= 0 ? base[iSeg] : 0), p5: q(margenes, .05), p50: q(margenes, .5), p95: q(margenes, .95) }, partidos: res };
+  // Nunca se muestra 100 %: con mesas sin contar siempre queda un resto de duda.
+  const tope = R > 0 ? 0.999 : 1;
+  const res = siglas.map((s, i) => ({ sigla: s, prob: Math.min(tope, wins[i] / sims), actual: base[i],
+    proyVotos: Math.round(base[i] + R * base[i] / n), p5: q(finales[i], .05), p50: q(finales[i], .5), p95: q(finales[i], .95) }))
+    .sort((a, b) => b.prob - a.prob || b.p50 - a.p50);
+  // Con poquísimas mesas ninguna proyección es confiable: se avisa en vez de declarar.
+  const confiable = n >= 12 && fraccion >= 0.50;
+  return { n, T, R, sims, fraccion, deriva, sigmaSesgo, confiable,
+           pendientesEst: Math.round(R * promValidos), lider: siglas[iLider], segundo: iSeg >= 0 ? siglas[iSeg] : "",
+           margen: { actual: base[iLider] - (iSeg >= 0 ? base[iSeg] : 0), p5: Math.round(q(margenes, .05)), p50: Math.round(q(margenes, .5)), p95: Math.round(q(margenes, .95)) },
+           partidos: res };
 }
 // Pinta la proyección en un contenedor (sirve para admin y pantalla TV).
 function renderProyeccion(el, actas, partidos, totalMesas, grande){
   const mc = proyeccionMC(actas, partidos, totalMesas);
   const info = Object.fromEntries(partidos.map(p => [p.sigla, p]));
   if (!mc) { el.innerHTML = `<div class="alert info">${!totalMesas ? "Para proyectar, define el <b>total de mesas</b> del distrito." : "Se necesitan al menos 3 actas para proyectar."}</div>`; return; }
-  const fp = x => (100 * x).toFixed(x >= .995 || x <= .005 ? 1 : 0) + "%";
+  const fp = x => x >= .999 ? "&gt;99.9%" : (100 * x).toFixed(x >= .99 || x <= .01 ? 1 : 0) + "%";
   const top = mc.partidos[0];
+  const pctCont = (100 * mc.fraccion).toFixed(0);
+  // Con poco contado, o si el resultado se está moviendo conforme llegan mesas, no se declara nada.
+  const aviso = !mc.confiable
+    ? `<div class="alert warn" style="margin:0 0 .8em">⚠ <b>Todavía no se puede proyectar un ganador.</b> Solo ${mc.n} de ${mc.T} mesas (${pctCont}%). Las primeras mesas en llegar casi nunca representan al distrito entero. Esto es una <b>tendencia</b>, no un pronóstico.</div>`
+    : (mc.deriva > 0.05
+      ? `<div class="alert warn" style="margin:0 0 .8em">⚠ <b>El resultado se está moviendo:</b> las últimas mesas votan distinto a las primeras (${(100*mc.deriva).toFixed(1)} puntos de diferencia). La proyección se ensanchó por eso.</div>`
+      : "");
   const barra = mc.partidos.filter(p => p.prob >= .005).map(p => `<div title="${esc(p.sigla)}: ${fp(p.prob)}" style="width:${(100 * p.prob).toFixed(2)}%;background:${info[p.sigla]?.color || '#888'};min-width:2px;border-right:2px solid var(--card,#1a1a19)"></div>`).join("");
-  el.innerHTML = `
+  el.innerHTML = aviso + `
     <div class="proy-top" style="display:flex;justify-content:space-between;align-items:baseline;gap:1em;flex-wrap:wrap">
-      <div><div class="muted" style="text-transform:uppercase;letter-spacing:.12em">Probabilidad de ganar</div>
-        <div style="font-weight:800;font-size:${grande ? "clamp(28px,3vw,64px)" : "26px"};line-height:1.05"><span class="dot" style="background:${info[top.sigla]?.color || '#888'};width:.5em;height:.5em;border-radius:4px;display:inline-block;margin-right:.2em"></span>${esc(top.sigla)} ${fp(top.prob)}</div>
+      <div><div class="muted" style="text-transform:uppercase;letter-spacing:.12em">${mc.confiable ? "Probabilidad de ganar" : "Va adelante por ahora"}</div>
+        <div style="font-weight:800;font-size:${grande ? "clamp(28px,3vw,64px)" : "26px"};line-height:1.05"><span class="dot" style="background:${info[top.sigla]?.color || '#888'};width:.5em;height:.5em;border-radius:4px;display:inline-block;margin-right:.2em"></span>${esc(top.sigla)}${mc.confiable ? " " + fp(top.prob) : ""}</div>
         <div class="muted">${esc(info[top.sigla]?.candidato || info[top.sigla]?.nombre || "")}</div></div>
       <div class="muted" style="text-align:right">${mc.n} de ${mc.T} mesas · faltan ${mc.R}<br>~${fmt(mc.pendientesEst)} votos válidos por llegar<br>${mc.sims.toLocaleString("es-PE")} simulaciones</div>
     </div>
     <div style="display:flex;height:${grande ? "clamp(14px,1.6vh,28px)" : "14px"};border-radius:6px;overflow:hidden;margin:.8em 0 .4em;background:var(--neutral,#383835)">${barra}</div>
     <div class="muted" style="margin-bottom:.8em">${mc.partidos.filter(p => p.prob >= .03).map(p => `<span style="margin-right:1.2em"><span class="dot" style="background:${info[p.sigla]?.color || '#888'}"></span> ${esc(p.sigla)} ${fp(p.prob)}</span>`).join("")}</div>
     <div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums">
-      <tr><th style="text-align:left">Partido</th><th class="num" style="text-align:right">Ahora</th><th class="num" style="text-align:right">Proyección final</th><th class="num" style="text-align:right">Rango 90%</th><th class="num" style="text-align:right">P(ganar)</th></tr>
+      <tr><th style="text-align:left">Partido</th><th class="num" style="text-align:right">Ahora</th><th class="num" style="text-align:right">Proyección final</th><th class="num" style="text-align:right">Rango 90%</th><th class="num" style="text-align:right">${mc.confiable ? "P(ganar)" : "Prob. (orientativa)"}</th></tr>
       ${mc.partidos.map(p => `<tr><td><span class="dot" style="background:${info[p.sigla]?.color || '#888'}"></span> <b>${esc(p.sigla)}</b></td>
         <td style="text-align:right">${fmt(p.actual)}</td><td style="text-align:right"><b>${fmt(p.proyVotos)}</b> · ${p.p50.toFixed(1)}%</td>
         <td style="text-align:right">${p.p5.toFixed(1)}–${p.p95.toFixed(1)}%</td><td style="text-align:right"><b>${fp(p.prob)}</b></td></tr>`).join("")}
     </table></div>
-    <p class="muted" style="margin:.8em 0 0">Margen final proyectado de <b>${esc(mc.lider)}</b> sobre ${esc(mc.segundo)}: <b>${mc.margen.p50 >= 0 ? "+" : ""}${fmt(mc.margen.p50)}</b> votos (rango 90%: ${fmt(mc.margen.p5)} a ${fmt(mc.margen.p95)}). Supone que las mesas que faltan se parecen a las ya reportadas.</p>`;
+    <p class="muted" style="margin:.8em 0 0">Margen final proyectado de <b>${esc(mc.lider)}</b> sobre ${esc(mc.segundo)}: <b>${mc.margen.p50 >= 0 ? "+" : ""}${fmt(mc.margen.p50)}</b> votos (rango 90%: ${fmt(mc.margen.p5)} a ${fmt(mc.margen.p95)}). <br><b>Cómo leerlo:</b> el cálculo ya incluye un margen por si las ${mc.R} mesas que faltan votan distinto a las contadas, que es lo que suele pasar (primero llegan las del centro y después las del campo). Aun así, mientras falten mesas <b>ningún número aquí es un resultado oficial</b>.</p>`;
 }
 function alertasDe(actas){
   const al = [];
@@ -430,7 +480,7 @@ function peticionIA(c, b64, mime, prompt){
   if (c.prov === "openrouter") return {
     url: "https://openrouter.ai/api/v1/chat/completions",
     opts: { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + c.k, "X-Title": "Conteo Rapido" },
-      body: JSON.stringify(Object.assign({ model: c.m, temperature: 0, max_tokens: 1500,
+      body: JSON.stringify(Object.assign({ model: c.m, temperature: 0, max_tokens: 6000,   // los modelos que razonan gastan tokens pensando antes de responder
         messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } }, { type: "text", text: prompt }] }] },
         SIN_JSON.has(c.m) ? {} : { response_format: { type: "json_object" } })) },
     texto: d => d.choices?.[0]?.message?.content || "",
