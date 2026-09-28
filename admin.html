@@ -63,6 +63,11 @@
         <div style="overflow:auto;max-height:60vh"><table id="tablaActas"></table></div>
       </div>
       <div class="card">
+        <h2>🎯 Precisión de la IA (se mide sola con las correcciones)</h2>
+        <p class="muted">Cada vez que un personero corrige un número que leyó la IA, queda registrado. Esta tabla compara lo que leyó cada modelo contra lo que quedó guardado. Sirve para saber cuál conviene y, más adelante, para entrenar un lector propio.</p>
+        <div id="precision_ia"></div>
+      </div>
+      <div class="card">
         <h2>Instalación de mesas <span class="pill ok" id="n_aper">0</span></h2>
         <div style="overflow:auto;max-height:40vh"><table id="tablaAperturas"></table></div>
       </div>
@@ -178,6 +183,26 @@ async function refrescar(){
 }
 const errorEn = (id, e) => { $(id).innerHTML = `<div class="alert info">${esc(e.message)}</div>`; };
 
+
+/* ---- precisión de la IA: se calcula con las correcciones reales de los personeros ---- */
+function pintarPrecision(actas){
+  const el = $("precision_ia"); if (!el) return;
+  const filas = precisionIA(actas, partidos());
+  const conLectura = (actas || []).filter(a => a.ia_lectura).length;
+  if (!filas.length) {
+    el.innerHTML = `<div class="alert info">Todavía no hay datos. Se llena sola cuando los personeros lean actas con la IA.${actas && actas.length && !conLectura ? " Ya llegaron actas pero sin lectura guardada: falta correr <code>supabase_entrenamiento.sql</code> en Supabase." : ""}</div>`;
+    return;
+  }
+  el.innerHTML = `<table><tr><th>Modelo</th><th class="num">Actas</th><th class="num">Campos correctos</th><th class="num">Sin corregir</th><th class="num">Demora</th><th>Se equivoca más en</th></tr>` +
+    filas.map((f, i) => `<tr${i === 0 ? ' class="lider-row"' : ""}><td>${i === 0 ? "🏆 " : ""}${esc(f.modelo)}</td>
+      <td class="num">${f.actas}</td>
+      <td class="num"><b>${(100 * f.exactitud).toFixed(1)}%</b> <span class="muted">${f.aciertos}/${f.total}</span></td>
+      <td class="num">${f.actas - f.corregidas}/${f.actas}</td>
+      <td class="num">${f.demora ? f.demora.toFixed(1) + " s" : "—"}</td>
+      <td>${f.peores.length ? f.peores.map(([c, n]) => `${esc(c)} <span class="muted">(${n})</span>`).join(" · ") : '<span class="muted">nada</span>'}</td></tr>`).join("") +
+    `</table><p class="muted" style="margin-top:8px">Medido sobre ${conLectura} acta(s) leídas con IA. Un modelo con pocas actas todavía no es comparable.</p>`;
+}
+
 /* ---- tablero ---- */
 async function pintarTablero(){
   let d; try { d = await datos(); } catch(e) { errorEn("kpi", e); $("barras").innerHTML = ""; $("proy_cont").innerHTML = ""; $("alertas").innerHTML = ""; return; }
@@ -223,6 +248,7 @@ async function pintarActas(){
   const f = ($("f_actas").value || "").toLowerCase();
   const actas = d.actas.filter(a => !f || String(a.mesa).toLowerCase().includes(f) || (a.personero || "").toLowerCase().includes(f));
   $("n_actas").textContent = d.actas.length; $("n_aper").textContent = d.aperturas.length;
+  pintarPrecision(d.actas);
   t1.innerHTML = `<tr><th>Mesa</th><th>Personero</th><th>Hora</th><th class="num">Hábiles</th><th class="num">Total</th><th>Estado</th><th>Foto</th><th></th></tr>` +
     (actas.length ? actas.map(a => { const s = sumaActa(a); const obs = a.habiles > 0 && s > a.habiles;
       return `<tr><td><b>${esc(a.mesa)}</b></td><td>${esc(a.personero || "—")}</td><td>${horaCorta(a.creado)}</td><td class="num">${a.habiles || "—"}</td><td class="num">${s}</td>
