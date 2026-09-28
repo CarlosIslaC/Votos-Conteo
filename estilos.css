@@ -78,9 +78,9 @@ code{font-size:12px;background:var(--bg);padding:1px 5px;border-radius:4px}
 /* ===== Admin profesional: barra lateral + contenido ===== */
 body.admin{display:flex;min-height:100vh;align-items:stretch}
 .admin .side{width:236px;flex:none;background:var(--card);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:16px 12px;position:sticky;top:0;height:100vh}
-.admin .brand{display:flex;gap:10px;align-items:center;padding:4px 8px 14px}
-.admin .brand .logo{font-size:26px;line-height:1}
-.admin .brand b{font-size:15px} .admin .brand small{display:block;color:var(--muted);font-size:12px}
+.admin .side .brand{display:flex;gap:10px;align-items:center;padding:4px 8px 14px}
+.admin .side .brand .logo{font-size:26px;line-height:1}
+.admin .side .brand b{font-size:15px} .admin .side .brand small{display:block;color:var(--muted);font-size:12px}
 .admin .menu{display:flex;flex-direction:column;gap:4px}
 .admin .menu button{text-align:left;border:0;background:transparent;color:var(--ink);padding:10px 12px;border-radius:8px;font-size:14px;cursor:pointer;font-family:inherit}
 .admin .menu button.active{background:var(--brand);color:#fff}
@@ -102,7 +102,7 @@ body.admin{display:flex;min-height:100vh;align-items:stretch}
 @media (max-width:900px){
   body.admin{flex-direction:column}
   .admin .side{width:auto;height:auto;position:static;flex-direction:row;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;border-right:0;border-bottom:1px solid var(--line)}
-  .admin .brand{padding:0 8px 0 0} .admin .menu{flex-direction:row;flex-wrap:wrap} .admin .tv{margin:0}
+  .admin .side .brand{padding:0 8px 0 0} .admin .menu{flex-direction:row;flex-wrap:wrap} .admin .tv{margin:0}
   .admin .side-foot{margin:0;width:100%;flex-direction:row;gap:12px;padding:0}
   .admin .grid2{grid-template-columns:1fr} .admin main{padding:12px}
 }
