@@ -68,6 +68,7 @@
   .vacio{color:var(--muted);padding:2vh 0;text-align:center;font-size:1.1em}
   #tabla{position:fixed;inset:6vh 8vw;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:2vh 2vw;overflow:auto;z-index:9;display:none}
   #tabla table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums} #tabla th,#tabla td{padding:.5em .6em;border-bottom:1px solid var(--grid);text-align:left} #tabla th{color:var(--muted)} #tabla td.n{text-align:right}
+  .firma{position:fixed;left:1.5vw;bottom:1vh;color:var(--muted);font-size:clamp(10px,.75vw,16px);opacity:.75}
   .hint{position:fixed;right:1.5vw;bottom:1vh;color:var(--muted);font-size:clamp(10px,.75vw,16px)}
 </style>
 </head>
@@ -85,6 +86,7 @@
   <section class="card ticker" id="ticker"></section>
 </main>
 <div id="tabla"></div>
+<div class="firma">Creado por <b>Codis</b> · © 2026 · Todos los derechos reservados</div>
 <div class="hint">T = tabla · F = pantalla completa · Esc = cerrar</div>
 
 <script src="config.js"></script>
