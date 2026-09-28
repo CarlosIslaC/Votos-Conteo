@@ -5,7 +5,7 @@
    y reportes para WhatsApp.
    ===================================================================== */
 "use strict";
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.3.0";
 
 /* ---------- utilidades ---------- */
 const esc = s => String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
@@ -243,7 +243,8 @@ const sbBorrarApertura = (e, mesa) => sbDelete("aperturas", `eleccion=eq.${encod
 const sbFetchActas     = e => sbGet(`actas?eleccion=eq.${encodeURIComponent(e)}&select=*&order=creado.asc`);
 const sbFetchAperturas = e => sbGet(`aperturas?eleccion=eq.${encodeURIComponent(e)}&select=*&order=hora.asc`);
 async function sbFetchConfig(e){ const r = await sbGet(`config?eleccion=eq.${encodeURIComponent(e)}&select=*`); return r[0] || null; }
-const sbFetchConfigs   = () => sbGet(`config?select=eleccion,nombre,ubicacion,total_mesas,actualizado&order=actualizado.desc`);
+const sbFetchConfigs   = () => sbGet(`config?select=eleccion,nombre,ubicacion,total_mesas,actualizado&order=actualizado.desc`)
+  .then(l => l.filter(c => !String(c.eleccion || "").startsWith("_")));   // "_ia" guarda las claves de IA: no es una elección
 const sbBorrarConfig   = e => sbDelete("config", `eleccion=eq.${encodeURIComponent(e)}`);
 const sbUpsertConfig   = cfg => sbUpsert("config", [cfg], "eleccion");
 const sbUpsertActa     = (e, a) => sbUpsert("actas", [{ eleccion: e, mesa: a.mesa, habiles: a.habiles, votos: a.votos, blancos: a.blancos, nulos: a.nulos, personero: a.personero, hash: a.hash, foto_url: a.foto_url || null }], "eleccion,mesa");
@@ -258,8 +259,28 @@ async function sbSubirFoto(e, mesa, file){
   return `${SB.url}/storage/v1/object/public/actas/${ruta}`;
 }
 
-/* ---------- IA: lector de actas ---------- */
-function detectarProv(clave){ clave = (clave||"").trim(); return clave.startsWith("sk-ant") ? "claude" : "gemini"; }
+/* ---------- IA: lector de actas ----------
+   Tres proveedores en cascada: Gemini (gratis) → OpenRouter (gratis) → Claude (de pago, último respaldo).
+   El proveedor se reconoce por cómo empieza la clave, así que el administrador solo pega claves. */
+const PROV = {
+  gemini:     { nombre: "Gemini",     pago: false, donde: "aistudio.google.com/apikey" },
+  openrouter: { nombre: "OpenRouter", pago: false, donde: "openrouter.ai/settings/keys" },
+  claude:     { nombre: "Claude",     pago: true,  donde: "console.anthropic.com" },
+};
+function detectarProv(clave){
+  clave = String(clave || "").trim();
+  if (clave.startsWith("sk-ant")) return "claude";
+  if (clave.startsWith("sk-or-")) return "openrouter";
+  return "gemini";
+}
+// Modelos con visión de OpenRouter. Los :free no cobran; el de pago solo se usa si todo lo gratis falla.
+const OR_GRATIS = ["google/gemma-4-31b-it:free", "google/gemma-4-26b-a4b-it:free", "openrouter/free",
+                   "dots-studio/dots-3-note-preview:free", "qwen/qwen3.8-27b:free"];
+const OR_PAGO   = ["anthropic/claude-haiku-4.5"];
+const CLAUDE_MODELOS = ["claude-haiku-4-5-20251001", "claude-sonnet-5"];
+const SIN_JSON  = new Set(["qwen/qwen3.8-27b:free"]);   // no aceptan responder en formato JSON
+const esPago = c => PROV[c.prov].pago || OR_PAGO.indexOf(c.m) >= 0;
+
 async function listarModelos(prov, clave){
   try{
     if (prov === "gemini") {
@@ -268,6 +289,8 @@ async function listarModelos(prov, clave){
       const j = await r.json();
       return (j.models||[]).filter(m => (m.supportedGenerationMethods||[]).includes("generateContent") && /gemini/i.test(m.name))
         .map(m => m.name.replace(/^models\//, "")).filter(m => !/embedding|tts|image|audio|live|thinking|robotics/i.test(m));
+    } else if (prov === "openrouter") {
+      return OR_GRATIS.concat(OR_PAGO);
     } else {
       const r = await fetch("https://api.anthropic.com/v1/models", { headers: { "x-api-key": clave, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" } });
       if (!r.ok) return [];
@@ -275,7 +298,7 @@ async function listarModelos(prov, clave){
     }
   }catch(e){ return []; }
 }
-// Cadena de modelos: el elegido primero; luego todos los disponibles y respaldos, ordenados flash → lite → pro.
+// Cadena de modelos de Gemini: el elegido primero; luego todos los disponibles y respaldos, ordenados flash → lite → pro.
 function cadenaModelos(elegido, disponibles){
   const pref = m => (/flash/i.test(m) && !/lite/i.test(m)) ? 0 : /lite/i.test(m) ? 1 : /pro/i.test(m) ? 2 : 3;
   const base = [ ...(disponibles||[]), "gemini-3.8-flash", "gemini-3-flash", "gemini-flash-latest", "gemini-3.8-flash-lite", "gemini-3-flash-lite",
@@ -314,70 +337,211 @@ ${lista}
 Devuelve SOLO este JSON, sin texto extra ni markdown:
 {"mesa":"","habiles":0,"votos":{${votosJson}},"blancos":0,"nulos":0,"impugnados":0,"dudas":[]}`;
 }
-// Memoria del modelo que respondió bien: se prueba primero la próxima vez.
-const LS_MODELO_OK = "cr_ia_modelo_ok";
+
+/* ---------- Claves de IA ----------
+   Se guardan en la NUBE (fila especial "_ia" de la tabla config, columna ia_key, una por línea) y las edita
+   el admin en Estado: al cambiarlas llegan solas a todos los celulares, sin volver a subir archivos.
+   config.js puede traer claves extra de respaldo (ia.keys o ia.key). */
+const IA_FILA = "_ia", LS_CLAVES_NUBE = "cr_ia_claves_nube";
+function partirClaves(txt){
+  return String(txt || "").split(/[\s,;]+/).map(k => k.replace(/^["'`]+|["'`]+$/g, "").trim())
+    .filter(k => k.length >= 30 && !/PEGA_AQUI/.test(k));
+}
+function clavesIA(ia){
+  const l = [].concat((ia && ia.keys) || [], (ia && ia.key) || []);
+  return [...new Set(l.map(k => String(k || "").trim()).filter(k => k && !/PEGA_AQUI/.test(k)))];
+}
+const huellaClave = k => "…" + String(k || "").slice(-6);
+function clavesNubeCache(){ try { const l = JSON.parse(localStorage.getItem(LS_CLAVES_NUBE)); return Array.isArray(l) ? l : []; } catch(e) { return []; } }
+// El respaldo de PAGO viene apagado: la app usa solo lo gratis mientras el admin no lo encienda.
+const LS_PAGO = "cr_ia_pago";
+function pagoCache(){ try { return localStorage.getItem(LS_PAGO) === "1"; } catch(e) { return false; } }
+async function sbLeerClavesIA(ms = 3000){
+  const r = await fetchConTimeout(`${SB.url}/rest/v1/config?eleccion=eq.${IA_FILA}&select=ia_key,ia_modelo`, { headers: sbHeaders() }, ms);
+  if (!r.ok) throw new Error("Supabase " + r.status);
+  const fila = (await r.json())[0], l = partirClaves(fila && fila.ia_key), pago = (fila && fila.ia_modelo) === "pago";
+  try { localStorage.setItem(LS_CLAVES_NUBE, JSON.stringify(l)); localStorage.setItem(LS_PAGO, pago ? "1" : "0"); } catch(e) {}
+  return l;
+}
+async function sbGuardarClavesIA(lista, pago){
+  await sbUpsertConfig({ eleccion: IA_FILA, nombre: "Claves de IA (no es una elección)", ia_key: lista.join("\n"), ia_modelo: pago ? "pago" : "gratis", actualizado: ahora() });
+  try { localStorage.setItem(LS_CLAVES_NUBE, JSON.stringify(lista)); localStorage.setItem(LS_PAGO, pago ? "1" : "0"); } catch(e) {}
+}
+// Todas las claves disponibles: las de la nube (recién leídas; sin conexión, las últimas conocidas) + las de config.js.
+// Devuelve {claves, pago}: pago=true solo si el admin encendió el respaldo de pago.
+async function clavesDisponibles(ia){
+  let nube = [];
+  if (sbListo()) { try { nube = await sbLeerClavesIA(); } catch(e) { nube = clavesNubeCache(); } }
+  return { claves: clavesIA({ keys: nube.concat(clavesIA(ia)) }), pago: pagoCache() };
+}
+// Memoria del modelo y de la clave que respondieron bien: se prueban primero la próxima vez.
+const LS_MODELO_OK = "cr_ia_modelo_ok", LS_CLAVE_OK = "cr_ia_clave_ok";
 function modeloRecordado(){ try { return localStorage.getItem(LS_MODELO_OK) || ""; } catch(e) { return ""; } }
 function recordarModelo(m){ try { localStorage.setItem(LS_MODELO_OK, m); } catch(e) {} }
+function claveRecordada(){ try { return localStorage.getItem(LS_CLAVE_OK) || ""; } catch(e) { return ""; } }
+function recordarClave(h){ try { localStorage.setItem(LS_CLAVE_OK, h); } catch(e) {} }
+// Prueba una clave contra su proveedor sin gastar cupo (ni dinero). Devuelve {ok, estado, ms, msg, prov, saldo}.
+async function probarClaveIA(clave, ms = 10000){
+  const t0 = Date.now(), prov = detectarProv(clave);
+  const fin = (ok, estado, msg, saldo) => ({ ok, estado, ms: Date.now() - t0, msg: msg || "", prov, saldo: saldo || "" });
+  try {
+    if (prov === "gemini") {
+      const r = await fetchConTimeout(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(clave)}&pageSize=1`, {}, ms);
+      let msg = ""; if (!r.ok) { try { msg = (await r.json()).error?.message || ""; } catch(_){} }
+      return fin(r.ok, r.status, msg);
+    }
+    if (prov === "openrouter") {
+      const r = await fetchConTimeout("https://openrouter.ai/api/v1/key", { headers: { authorization: "Bearer " + clave } }, ms);
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) return fin(false, r.status, j.error?.message || "");
+      const d = j.data || {}, queda = d.limit_remaining, usado = +d.usage || 0;
+      return fin(true, 200, "", queda == null ? (usado ? `gastado $${usado.toFixed(2)}` : "sin límite") : `quedan $${(+queda).toFixed(2)}`);
+    }
+    const r = await fetchConTimeout("https://api.anthropic.com/v1/models?limit=1", { headers: { "x-api-key": clave, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" } }, ms);
+    let msg = ""; if (!r.ok) { try { msg = (await r.json()).error?.message || ""; } catch(_){} }
+    return fin(r.ok, r.status, msg);
+  } catch(e) { return fin(false, 0, "sin respuesta"); }
+}
 
-// Lee el acta. Prueba el modelo recordado, luego el elegido y los demás, UNA vez cada uno y sin esperas;
-// si todos fallan, hace una segunda pasada corta. onEstado(texto) recibe el progreso.
-// Devuelve {json, modeloUsado}. Lanza Error con mensaje claro.
-async function leerActaConIA({ foto, partidos, clave, modelo, disponibles, onEstado }){
+// Arma la petición de cada proveedor (misma foto y mismas instrucciones para todos).
+function peticionIA(c, b64, mime, prompt){
+  if (c.prov === "gemini") return {
+    url: `https://generativelanguage.googleapis.com/v1beta/models/${c.m}:generateContent?key=${encodeURIComponent(c.k)}`,
+    opts: { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: mime, data: b64 } }, { text: prompt }] }],
+                             generationConfig: { temperature: 0, responseMimeType: "application/json" } }) },
+    texto: d => (d.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join(""),
+  };
+  if (c.prov === "openrouter") return {
+    url: "https://openrouter.ai/api/v1/chat/completions",
+    opts: { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + c.k, "X-Title": "Conteo Rapido" },
+      body: JSON.stringify(Object.assign({ model: c.m, temperature: 0, max_tokens: 1500,
+        messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } }, { type: "text", text: prompt }] }] },
+        SIN_JSON.has(c.m) ? {} : { response_format: { type: "json_object" } })) },
+    texto: d => d.choices?.[0]?.message?.content || "",
+  };
+  return {   // claude
+    url: "https://api.anthropic.com/v1/messages",
+    opts: { method: "POST", headers: { "content-type": "application/json", "x-api-key": c.k, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+      body: JSON.stringify({ model: c.m, max_tokens: 1500, temperature: 0,
+        messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: mime, data: b64 } }, { text: prompt, type: "text" }] }] }) },
+    texto: d => (d.content || []).map(b => b.text || "").join(""),
+  };
+}
+
+// Lee el acta combinando CLAVES × MODELOS en una carrera continua:
+//  · primero TODO lo gratis (Gemini y los modelos :free de OpenRouter). El de pago (Claude) solo entra si eso
+//    falla Y el admin lo encendió; apagado (por defecto), la lectura es 100% gratis;
+//  · arranca con la clave y el modelo que respondieron la última vez;
+//  · si una combinación FALLA (clave rechazada, sin cupo, modelo saturado) arranca la siguiente al instante;
+//  · si solo TARDA, cada 4 s suma otra en paralelo (de otro modelo si se puede), hasta 3 a la vez;
+//  · un modelo saturado descansa 8 s, luego 16 s, luego 30 s, y vuelve a entrar;
+//  · la primera respuesta válida gana y se cancelan las demás.
+// Una clave rechazada (401/403) se descarta entera; sin cupo o sin saldo (429/402), solo para ese modelo.
+// Acepta clave (una) o claves (lista). onEstado(texto) recibe el progreso.
+// Devuelve {json, modeloUsado, claveUsada, proveedor, pago, avisos}. Lanza Error con mensaje claro.
+async function leerActaConIA({ foto, partidos, clave, claves, modelo, disponibles, pago: usarPago, onEstado }){
   const est = onEstado || (() => {});
-  if (!clave) throw new Error("No hay clave de IA configurada.");
-  const prov = detectarProv(clave);
+  const lista = clavesIA({ keys: claves, key: clave });
+  if (!lista.length) throw new Error("No hay claves de IA. El administrador debe ponerlas en Admin → Estado → Claves de IA.");
+  if (typeof navigator !== "undefined" && navigator.onLine === false) throw new Error("Sin internet. Ingresa los números a mano o intenta cuando tengas señal.");
   est("Preparando la foto…");
   const chica = await comprimirImagen(foto);
   const b64 = await fileToBase64(chica);
   const mime = chica.type || "image/jpeg";
   const prompt = promptActa(partidos);
-  let texto = "", usado = "";
-  if (prov === "gemini") {
-    const cuerpo = JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: mime, data: b64 } }, { text: prompt }] }],
-                                    generationConfig: { temperature: 0, responseMimeType: "application/json" } });
-    const cadena = cadenaModelos(modelo, disponibles);
-    const rec = modeloRecordado();
-    if (rec) { const i = cadena.indexOf(rec); if (i > 0) cadena.splice(i, 1); if (i !== 0) cadena.unshift(rec); }
-    const fallos = []; let msg403 = "", claveMala = null;
-    // un intento con un modelo; resuelve {r,m} si responde OK, rechaza si no
-    const intentar = (m, ms, ctl) => (async () => {
-      let r;
-      try { r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${encodeURIComponent(clave)}`,
-              { method: "POST", headers: { "content-type": "application/json" }, body: cuerpo, signal: ctl.signal }); }
-      catch(e) { fallos.push(m + ": sin respuesta"); throw e; }
-      if (r.ok) return { data: await r.json(), m };   // se lee el cuerpo aquí, antes de cancelar a los demás
-      if (r.status === 401) { let msg = ""; try { msg = (await r.json()).error?.message || ""; } catch(_){} claveMala = `La clave de IA fue rechazada (401). ${msg}`; }
-      if (r.status === 403 && !msg403) { try { msg403 = (await r.json()).error?.message || ""; } catch(_){} }
-      fallos.push(m + ": " + r.status); throw new Error(m + ": " + r.status);
-    })();
-    // prueba los modelos de DOS en dos: el primero que responda gana y se cancela el otro
-    const probarGrupo = async (grupo, ms) => {
-      est(`Leyendo con ${grupo.join(" y ")}…`);
-      const ctls = grupo.map(() => new AbortController());
-      const tm = setTimeout(() => ctls.forEach(c => c.abort()), ms);
-      try { const g = await Promise.any(grupo.map((m, i) => intentar(m, ms, ctls[i]))); ctls.forEach(c => c.abort()); return g; }
-      catch(e) { return null; } finally { clearTimeout(tm); }
+  const aJson = t => { const i = t.indexOf("{"), j = t.lastIndexOf("}"); if (i < 0 || j < 0) throw new Error("sin JSON"); return JSON.parse(t.slice(i, j + 1)); };
+
+  // claves: la recordada primero; el nombre "clave N" sigue el orden de la lista (nube y luego config.js)
+  const nombre = new Map(lista.map((k, i) => [k, "clave " + (i + 1)]));
+  const orden = lista.slice(), hr = claveRecordada();
+  const ir = orden.findIndex(k => huellaClave(k) === hr); if (ir > 0) orden.unshift(orden.splice(ir, 1)[0]);
+  // modelos de Gemini: el recordado primero
+  const cadena = cadenaModelos(modelo, disponibles);
+  const rec = modeloRecordado();
+  if (rec && cadena.indexOf(rec) !== 0) { const i = cadena.indexOf(rec); if (i > 0) cadena.splice(i, 1); if (i >= 0) cadena.unshift(rec); }
+  // combinaciones clave × modelo, agrupadas por proveedor
+  const combos = [];
+  orden.forEach(k => {
+    const prov = detectarProv(k);
+    const ms = prov === "gemini" ? cadena : prov === "openrouter" ? OR_GRATIS.concat(OR_PAGO) : CLAUDE_MODELOS;
+    ms.forEach(m => combos.push({ m, k, prov, id: prov + "|" + m + "|" + k }));
+  });
+  if (rec) { const i = combos.findIndex(c => c.m === rec && !esPago(c)); if (i > 0) combos.unshift(combos.splice(i, 1)[0]); }
+  const gratis = combos.filter(c => !esPago(c)), pago = usarPago ? combos.filter(esPago) : [];
+
+  const clavesMalas = new Map(), noExiste = new Set(), descartados = new Set(), sinCupo = new Map();
+  const descanso = new Map(), fallosModelo = new Map();         // modelo saturado → hasta cuándo descansa
+  const saturar = m => { const n = (fallosModelo.get(m) || 0) + 1; fallosModelo.set(m, n); descanso.set(m, Date.now() + Math.min(8000 * 2 ** (n - 1), 30000)); };
+  let ilegibles = 0;
+  const etiqueta = c => (lista.length > 1 ? `${c.m} (${nombre.get(c.k)})` : c.m);
+  const util = c => !clavesMalas.has(c.k) && !noExiste.has(c.prov + "|" + c.m) && !descartados.has(c.id);
+
+  // un intento: resuelve {json, c} con el acta ya interpretada; si no, anota por qué falló y rechaza
+  const intentar = async (c, ctl) => {
+    const p = peticionIA(c, b64, mime, prompt);
+    let r;
+    try { r = await fetch(p.url, Object.assign({ signal: ctl.signal }, p.opts)); }
+    catch(e) { saturar(c.m); throw e; }                            // sin respuesta o cancelado por tiempo
+    let d = null; try { d = await r.json(); } catch(e) {}
+    if (r.ok && d && !d.error) {
+      try { return { json: aJson(p.texto(d)), c }; } catch(e) { ilegibles++; descartados.add(c.id); throw e; }   // respuesta rara: otra combinación
+    }
+    const err = (d && (d.error?.message || d.error?.metadata?.raw)) || "";
+    const cod = r.ok ? (+(d && d.error?.code) || 503) : r.status;
+    if (cod === 401 || cod === 403 || (cod === 400 && /api.?key|credential/i.test(err)))
+      clavesMalas.set(c.k, `${nombre.get(c.k)} (${huellaClave(c.k)}, ${PROV[c.prov].nombre}) rechazada: ${cod === 401 ? "no existe o fue borrada" : cod === 403 ? "sin permiso" : "clave inválida"}`);
+    else if (cod === 429 || cod === 402) { descartados.add(c.id); sinCupo.set(c.k, nombre.get(c.k) + (cod === 402 ? " (sin saldo)" : " (sin cupo por hoy)")); }
+    else if (cod === 404) noExiste.add(c.prov + "|" + c.m);
+    else saturar(c.m);                                             // 503, 500, 502…
+    throw new Error(etiqueta(c) + ": " + cod);
+  };
+
+  // carrera continua sobre un grupo de combinaciones; resuelve el ganador o null
+  const carrera = (grupo, tope, aviso) => new Promise(resolve => {
+    const ESCALON = 4000, MAX_VIVOS = 3, POR_INTENTO = 25000;
+    const vivos = new Map(), t0 = Date.now(); let fin = false, ultimo = 0, reloj = null;
+    const cerrar = x => { if (fin) return; fin = true; clearInterval(reloj); vivos.forEach(v => v.ctl.abort()); resolve(x); };
+    const lanzar = otroModelo => {
+      if (fin || vivos.size >= MAX_VIVOS) return;
+      if (!grupo.some(util)) { if (!vivos.size) cerrar(null); return; }        // ya no queda clave ni modelo que sirva
+      const ahora = Date.now(), enVuelo = new Set([...vivos.values()].map(v => v.c.m));
+      const libres = grupo.filter(c => util(c) && !vivos.has(c.id) && !((descanso.get(c.m) || 0) > ahora));
+      if (!libres.length) { if (!vivos.size) est(aviso); return; }             // todos descansan: el reloj reintenta
+      const c = (otroModelo && libres.find(x => !enVuelo.has(x.m))) || libres[0];
+      const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), POR_INTENTO);
+      vivos.set(c.id, { c, ctl }); ultimo = ahora;
+      est(`Leyendo con ${[...vivos.values()].map(v => etiqueta(v.c)).join(" y ")}…`);
+      intentar(c, ctl).then(x => { clearTimeout(t); cerrar(x); },
+                           () => { clearTimeout(t); vivos.delete(c.id); lanzar(false); });
     };
-    let ganador = null;
-    for (let i = 0; i < cadena.length && !ganador; i += 2) { ganador = await probarGrupo(cadena.slice(i, i + 2), 25000); if (claveMala) throw new Error(claveMala); }
-    if (!ganador) { est("Todos ocupados, reintentando…"); await esperar(1500); ganador = await probarGrupo(cadena.slice(0, 3), 25000); }
-    if (!ganador) throw new Error(msg403 ? `Google no permite usar la IA con esta clave: ${msg403}` : "Ningún modelo respondió ahora (saturación de Gemini). Espera 1 minuto y vuelve a intentar.");
-    usado = ganador.m; recordarModelo(usado);
-    const data = ganador.data;
-    texto = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("");
-  } else {
-    usado = modelo && modelo.startsWith("claude") ? modelo : "claude-sonnet-5";
-    est(`Leyendo con ${usado}…`);
-    const r = await fetch("https://api.anthropic.com/v1/messages", { method: "POST",
-      headers: { "content-type": "application/json", "x-api-key": clave, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
-      body: JSON.stringify({ model: usado, max_tokens: 1024, messages: [{ role: "user", content: [
-        { type: "image", source: { type: "base64", media_type: mime, data: b64 } }, { type: "text", text: prompt }] }] }) });
-    if (!r.ok) throw new Error("Claude respondió error " + r.status + ". Revisa la clave.");
-    texto = ((await r.json()).content || []).map(b => b.text || "").join("");
+    reloj = setInterval(() => {
+      if (fin) return;
+      if (Date.now() - t0 > tope) return cerrar(null);
+      if (!vivos.size) lanzar(false);                               // nada en vuelo (todos descansaban): reintenta
+      else if (Date.now() - ultimo >= ESCALON) lanzar(true);        // tarda: suma otro en paralelo, de otro modelo
+    }, 500);
+    lanzar(false);
+  });
+
+  let g = await carrera(gratis, pago.length ? 60000 : 90000, "Los modelos gratis están ocupados, reintentando…");
+  if (!g && pago.some(util)) {                                      // último respaldo: cuesta centavos por acta
+    est("Lo gratis no responde: usando el respaldo de pago (Claude)…");
+    g = await carrera(pago, 30000, "Reintentando con el respaldo de pago…");
   }
-  const i = texto.indexOf("{"), j = texto.lastIndexOf("}");
-  if (i < 0 || j < 0) throw new Error("La IA no devolvió datos legibles. Toma la foto más de frente, sin sombras.");
-  return { json: JSON.parse(texto.slice(i, j + 1)), modeloUsado: usado };
+  const malas = [...clavesMalas.values()];
+  if (!g) {
+    if (malas.length === lista.length)
+      throw new Error(`Rechazaron ${lista.length > 1 ? "todas las claves" : "la clave"} de IA: ${malas.join("; ")}. El administrador debe poner una clave nueva en Admin → Estado → Claves de IA.`);
+    if (!gratis.some(util) && sinCupo.size)
+      throw new Error(`Se acabó el cupo de hoy: ${[...sinCupo.values()].join(", ")}. Agrega otra clave (de otra cuenta Gmail) en Admin → Estado, o ingresa los números a mano.`);
+    let m = ilegibles ? "La IA no pudo leer los números. Toma la foto más de frente, sin sombras, y vuelve a intentar."
+                      : "Ningún modelo respondió: están saturados. Escribe los números a mano o vuelve a intentar en unos minutos.";
+    if (malas.length) m += " Claves rechazadas: " + malas.join("; ") + ".";
+    throw new Error(m);
+  }
+  if (!esPago(g.c)) { recordarModelo(g.c.m); recordarClave(huellaClave(g.c.k)); }   // no se recuerda el de pago: solo es respaldo
+  return { json: g.json, modeloUsado: g.c.m, claveUsada: nombre.get(g.c.k), proveedor: PROV[g.c.prov].nombre, pago: esPago(g.c), avisos: malas };
 }
 
 /* ---------- compartir (WhatsApp) ---------- */
