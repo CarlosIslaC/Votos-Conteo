@@ -16,7 +16,10 @@ const CONFIG = {
 
   // ---- IA para leer actas (Gemini, gratis en aistudio.google.com/apikey) ----
   ia: {
-    key: "AQ.Ab8RN6LhcAp-Ich-q7zE4DIEchdAeGqvOTjzM9SAFAyk-eF7AQ",                 // ← clave (empieza con AIza…)
+    // Las claves de IA (Gemini, OpenRouter o Claude) se ponen en Admin → Estado → «Claves de IA»: se guardan en la nube y llegan
+    // solas a todos los celulares, sin volver a subir archivos. Aquí puedes dejar claves de respaldo
+    // ("clave1", "clave2"), pero este archivo es público: evita subirlo con claves a un GitHub público.
+    keys: [],
     modelo: "gemini-3.8-flash",                       // modelo principal; si se satura, la app prueba otros solo
     modelos: ["gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-2.5-pro", "gemini-pro-latest"]                                       // opcional: lista de modelos permitidos (vacío = automático)
   },
