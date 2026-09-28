@@ -85,8 +85,18 @@
         <div class="row"><div><label>Total de mesas</label><input id="e_totalmesas" type="number" min="0" inputmode="numeric" placeholder="ej. 45"></div>
         <div style="display:flex;align-items:flex-end"><button class="btn" onclick="guardarTotalMesas()">💾 Guardar</button></div></div>
         <p class="muted" id="e_tm_estado"></p></div>
+      <div class="card brand"><h2>🤖 Claves de IA</h2>
+        <p class="muted">Pega una clave por línea, de cualquiera de estos tres. La app reconoce sola cuál es y las usa en este orden: <b>Gemini</b> (gratis, aistudio.google.com/apikey) → <b>OpenRouter</b> (gratis, openrouter.ai/settings/keys) → <b>Claude</b> (de pago, console.anthropic.com). Si una clave deja de funcionar o se queda sin cupo, pasa sola a la siguiente y se queda con la que responde más rápido. Se guardan en la nube: todos los celulares las usan al instante, sin volver a subir archivos. Crea varias claves de Gemini con distintas cuentas Gmail, porque cada cuenta tiene su propio cupo diario.</p>
+        <label>Claves (una por línea)</label>
+        <textarea id="e_claves" rows="4" spellcheck="false" autocomplete="off" placeholder="AIza…  ·  sk-or-v1-…  ·  sk-ant-…" style="font-family:ui-monospace,Consolas,monospace;font-size:13px"></textarea>
+        <label style="display:flex;gap:8px;align-items:flex-start;margin-top:12px;cursor:pointer">
+          <input type="checkbox" id="e_pago" style="width:auto;margin-top:3px">
+          <span>Usar el respaldo <b>de pago</b> (Claude) solo si todo lo gratis falla. Apagado, la lectura es 100&nbsp;% gratis y si nada responde se escriben los números a mano. Encendido, cuesta alrededor de medio centavo de dólar por acta y necesita una clave de Claude o de OpenRouter con saldo.</span>
+        </label>
+        <div class="toolbar" style="margin:10px 0 0"><button class="btn" onclick="guardarClaves()">💾 Guardar claves</button><button class="btn ghost" onclick="probarClaves()">🔎 Probar claves</button></div>
+        <p class="muted" id="ia_claves"></p></div>
       <div class="card"><h2>🔑 Estado de la configuración</h2><div id="estado_cont"></div>
-        <p class="muted" style="margin-top:12px">Las claves (nube e IA), los candidatos y el total de mesas se editan en <code>config.js</code>.</p></div>
+        <p class="muted" style="margin-top:12px">La conexión a la nube y los candidatos se editan en <code>config.js</code>. Las claves de IA y el total de mesas se editan aquí arriba.</p></div>
     </section>
   </main>
 </div>
@@ -99,7 +109,39 @@ const E = CONFIG.eleccion, partidos = () => CONFIG.partidos;
 let totalMesas = CONFIG.totalMesas || 0; const TM = () => totalMesas;   // se guarda en la nube desde Estado
 SB.url = (CONFIG.supabase.url||"").replace(/\/$/,""); SB.key = CONFIG.supabase.key||"";
 const nubeOK = () => sbListo() && !/XXXX|PEGA_AQUI/.test(SB.url + SB.key);
-const iaOK   = () => !!CONFIG.ia.key && !/PEGA_AQUI/.test(CONFIG.ia.key);
+let clavesNube = clavesNubeCache(), pagoNube = pagoCache();   // claves de IA en la nube (se editan en Estado)
+const iaOK   = () => clavesNube.length > 0 || clavesIA(CONFIG.ia).length > 0;
+async function cargarClavesNube(){ if (nubeOK()) { try { clavesNube = await sbLeerClavesIA(5000); pagoNube = pagoCache(); } catch(e) {} } return clavesNube; }
+function pintarClavesIA(){
+  const ta = document.getElementById("e_claves"); if (ta && document.activeElement !== ta) ta.value = clavesNube.join("\n");
+  const ch = document.getElementById("e_pago"); if (ch) ch.checked = pagoNube;
+  const d = document.getElementById("sf_ia"); if (d) d.className = "estado-dot " + (iaOK() ? "ok" : "bad");
+}
+// Guarda en la nube las claves pegadas (una por línea) y las prueba. Todos los celulares las usan al instante.
+async function guardarClaves(){
+  const el = document.getElementById("ia_claves"), lista = clavesIA({ keys: partirClaves(document.getElementById("e_claves").value) });
+  const pago = document.getElementById("e_pago").checked;
+  if (!nubeOK()) { el.textContent = "La nube no está configurada."; return; }
+  el.textContent = "Guardando…";
+  try { await sbGuardarClavesIA(lista, pago); clavesNube = lista; pagoNube = pago; document.getElementById("e_claves").value = lista.join("\n"); pintarClavesIA(); pintarEstado(); }
+  catch(e) { el.textContent = "❌ " + e.message; return; }
+  if (!lista.length) { el.textContent = "✓ Guardado sin claves: la lectura con IA queda apagada."; return; }
+  await probarClaves(`✓ ${lista.length} clave(s) guardada(s) en la nube. Ya las usan todos los celulares.`);
+}
+// Prueba cada clave contra su proveedor (Gemini, OpenRouter o Claude), sin gastar cupo ni dinero.
+async function probarClaves(titulo){
+  const el = document.getElementById("ia_claves"); if (!el) return;
+  const ta = document.getElementById("e_claves");
+  const lista = clavesIA({ keys: partirClaves(ta ? ta.value : "").concat(clavesIA(CONFIG.ia)) });
+  if (!lista.length) { el.textContent = "No hay claves para probar."; return; }
+  el.textContent = "Probando " + lista.length + " clave(s)…";
+  const res = await Promise.all(lista.map(k => probarClaveIA(k)));
+  el.innerHTML = (typeof titulo === "string" ? esc(titulo) + "<br>" : "") + res.map((r, i) => {
+    const p = PROV[r.prov], etq = `clave ${i + 1} · ${esc(p.nombre)}${p.pago ? " (de pago)" : ""} (${esc(huellaClave(lista[i]))}): `;
+    return etq + (r.ok ? `<span class="pill ok">activa · ${r.ms} ms</span>${r.saldo ? " " + esc(r.saldo) : ""}`
+      : `<span class="pill bad">${r.estado === 401 || r.estado === 400 ? "no existe o fue borrada" : r.estado === 403 ? "sin permiso" : "sin respuesta"} (${r.estado || "—"})</span>`);
+  }).join("<br>");
+}
 const $ = id => document.getElementById(id);
 const TITULOS = { tablero:"Tablero", reporte:"Reporte de campaña", actas:"Actas e instalaciones", personeros:"Personeros", estado:"Estado" };
 let tab = "tablero", poll = null, cache = null;
@@ -109,7 +151,7 @@ async function iniciar(){
   $("tb_sub").textContent = CONFIG.nombre + " · " + lugarDe(CONFIG.ubicacion);
   $("p_url").textContent = new URL("personero.html", location.href).href;
   $("sf_ver").textContent = APP_VERSION;
-  $("sf_nube").className = "estado-dot " + (nubeOK() ? "ok" : "bad"); $("sf_ia").className = "estado-dot " + (iaOK() ? "ok" : "bad");
+  $("sf_nube").className = "estado-dot " + (nubeOK() ? "ok" : "bad"); pintarClavesIA(); cargarClavesNube().then(pintarClavesIA);
   if (!nubeOK()) $("aviso").innerHTML = `<div class="alert warn">⚠ La nube no está configurada en <code>config.js</code>. Sin eso no llegan las actas de los personeros.</div>`;
   activarTab("tablero");
 }
@@ -228,6 +270,7 @@ async function guardarTotalMesas(){
 }
 async function pintarEstado(){
   const el = $("estado_cont"); $("e_totalmesas").value = TM() || "";
+  await cargarClavesNube(); pintarClavesIA();
   let nube = "⚠ falta poner URL y anon key en config.js";
   if (nubeOK()) { try { const a = await sbFetchActas(E); nube = `✅ conectada (${a.length} actas)`; } catch(e) { nube = "❌ error: " + e.message; } }
   el.innerHTML = `<table>
@@ -235,7 +278,7 @@ async function pintarEstado(){
     <tr><th>Candidatos</th><td>${partidos().length} partidos cargados</td></tr>
     <tr><th>Total de mesas</th><td>${TM() || '<span class="pill warn">no definido</span> — ponlo arriba'}</td></tr>
     <tr><th>Nube (Supabase)</th><td>${nube}</td></tr>
-    <tr><th>IA (Gemini)</th><td>${iaOK() ? `✅ configurada · modelo ${esc(CONFIG.ia.modelo)} (con respaldo automático)` : "⚠ falta la clave en config.js"}</td></tr>
+    <tr><th>IA lectora</th><td>${iaOK() ? `✅ ${clavesNube.length} clave(s) en la nube${clavesIA(CONFIG.ia).length ? ` + ${clavesIA(CONFIG.ia).length} en config.js` : ""} · ${[...new Set(clavesNube.concat(clavesIA(CONFIG.ia)).map(k => PROV[detectarProv(k)].nombre))].join(", ")} · respaldo de pago ${pagoNube ? "encendido" : "apagado (todo gratis)"}` : "⚠ sin claves: pégalas arriba, en «Claves de IA»"}</td></tr>
     <tr><th>Versión</th><td>${APP_VERSION}</td></tr></table>`;
 }
 iniciar();
