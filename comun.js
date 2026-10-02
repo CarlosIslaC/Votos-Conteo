@@ -511,6 +511,8 @@ Estructura típica del acta:
 - Arriba: "MESA DE SUFRAGIO N°" (número de 6 dígitos, ej. 045527) y "TOTAL DE ELECTORES HÁBILES" (número, ej. 300).
 - Sección "ACTA DE ESCRUTINIO": tabla con la columna "ORGANIZACIONES POLÍTICAS" (nombre y símbolo de cada partido/lista) y la columna "TOTAL DE VOTOS" (número de votos; a veces también escrito en letras).
 - Debajo: "VOTOS EN BLANCO", "VOTOS NULOS", "VOTOS IMPUGNADOS" y "TOTAL DE VOTOS EMITIDOS".
+- "TOTAL DE ELECTORES HÁBILES" es cuánta gente PODÍA votar en esa mesa, no cuánta votó: casi siempre es
+  mayor que el total de votos emitidos, y esa diferencia son los que no fueron a votar. No es un error.
 
 Reglas:
 1. Usa el número en DÍGITOS de la columna TOTAL DE VOTOS de cada organización. Si hay dígitos y letras y no coinciden, usa el que se lea con más claridad y anótalo en "dudas".
@@ -519,13 +521,15 @@ Reglas:
 4. Si un número está tachado, corregido o poco legible, da tu mejor lectura y agrégalo a "dudas" (ej. "APP: 150 o 156?").
 5. No inventes: si un dato no se ve, deja 0 (o "" en mesa) y anótalo en "dudas".
 6. Verifica EN SILENCIO: la suma de todos los votos + blancos + nulos + impugnados debe coincidir con TOTAL DE VOTOS EMITIDOS y nunca ser mayor que los electores hábiles. Escribe en "dudas" SOLO si NO cuadra.
-7. "dudas" es únicamente para PROBLEMAS: un número ilegible, tachado o corregido, o una cuenta que no cuadra. Si todo se leyó bien y las cuentas cuadran, devuelve "dudas":[] vacío. NUNCA pongas en "dudas" una comprobación que salió bien (nada de "la suma coincide", "todo correcto", "concuerda"): el personero ve cada entrada como una advertencia, y si salen en actas buenas deja de hacerle caso a las de verdad.
+7. "total_emitidos" es el número escrito en la casilla TOTAL DE VOTOS EMITIDOS del acta, tal como está, aunque esté mal sumado. No lo calcules tú: cópialo.
+8. "dudas" es únicamente para PROBLEMAS: un número ilegible, tachado o corregido, o una cuenta que no cuadra. Si todo se leyó bien y las cuentas cuadran, devuelve "dudas":[] vacío. NUNCA pongas en "dudas" una comprobación que salió bien (nada de "la suma coincide", "todo correcto", "concuerda"): el personero ve cada entrada como una advertencia, y si salen en actas buenas deja de hacerle caso a las de verdad.
+9. Cuando algo NO cuadre, di EXACTAMENTE qué y por cuánto, para que el personero sepa dónde mirar. Bien: "los partidos + blancos + nulos + impugnados suman 250 pero el acta dice 243 emitidos: sobran 7". Mal: "revisar las sumas". Que la suma sea MENOR que los electores hábiles NO es un problema y no se anota: son los que no fueron a votar.
 
 Partidos permitidos (sigla = nombre — candidato):
 ${lista}
 
 Devuelve SOLO este JSON, sin texto extra ni markdown:
-{"mesa":"","habiles":0,"votos":{${votosJson}},"blancos":0,"nulos":0,"impugnados":0,"dudas":[]}`;
+{"mesa":"","habiles":0,"votos":{${votosJson}},"blancos":0,"nulos":0,"impugnados":0,"total_emitidos":0,"dudas":[]}`;
 }
 
 /* ---------- Claves de IA ----------

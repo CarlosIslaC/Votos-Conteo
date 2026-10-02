@@ -37,11 +37,11 @@
     <h2>📸 Acta de escrutinio (tarde)</h2>
     <p class="muted">Cuando la mesa termine de contar, toma la foto del acta y deja que la IA llene los números. Revísalos y guarda.</p>
     <label>Foto del acta</label>
-    <input id="c_foto" type="file" accept="image/*">
+    <input id="c_foto" type="file" accept="image/*" onchange="actaRef = { total: null, impugnados: 0 }; recalcTotal();">
     <div class="toolbar" style="margin:8px 0"><button class="btn" onclick="leerActa(this)">🤖 Leer números con IA</button></div>
     <p class="muted" id="c_ia_estado"></p>
     <div id="c_dudas"></div>
-    <label>Electores hábiles</label><input id="c_habiles" type="number" min="0" inputmode="numeric">
+    <label>Electores hábiles</label><input id="c_habiles" type="number" min="0" inputmode="numeric" oninput="recalcTotal()">
     <div id="c_partidos"></div>
     <div class="row">
       <div><label>Votos en blanco</label><input id="c_blancos" type="number" min="0" value="0" inputmode="numeric" oninput="recalcTotal()"></div>
@@ -75,7 +75,11 @@ const E = CONFIG.eleccion, partidos = () => CONFIG.partidos;
 SB.url = (CONFIG.supabase.url||"").replace(/\/$/,""); SB.key = CONFIG.supabase.key||"";
 const nubeOK = () => sbListo() && !/XXXX|PEGA_AQUI/.test(SB.url + SB.key);
 const iaOK   = () => nubeOK() || clavesIA(CONFIG.ia).length > 0;
-let ultimaIA = null;   // última lectura de la IA, para compararla con lo que corrija el personero   // las claves llegan de la nube (Admin → Estado) o de config.js
+let ultimaIA = null;   // última lectura de la IA, para compararla con lo que corrija el personero
+/* Lo que dice el acta, leído por la IA: el TOTAL DE VOTOS EMITIDOS escrito en su casilla y los votos
+   impugnados. Sirven para comprobar la cuenta. Va aquí arriba porque recalcTotal() lo usa y el
+   arranque la llama antes de llegar al resto del archivo. */
+let actaRef = { total: null, impugnados: 0 };   // las claves llegan de la nube (Admin → Estado) o de config.js
 
 (function iniciar(){
   document.getElementById("hdr_sub").textContent = CONFIG.nombre; document.getElementById("app_ver").textContent = APP_VERSION;
@@ -101,7 +105,23 @@ function guardarYo(){ db.nombre = document.getElementById("c_personero").value.t
 function recalcTotal(){
   let val = 0; partidos().forEach(p => { const el = document.getElementById("v_"+p.sigla); if (el) val += +el.value || 0; });
   const b = +document.getElementById("c_blancos").value || 0, n = +document.getElementById("c_nulos").value || 0;
-  document.getElementById("c_total").innerHTML = `✅ Votos válidos: <b>${val}</b> · Blancos: ${b} · Nulos: ${n} · <b>Total: ${val+b+n}</b>`;
+  const h = +document.getElementById("c_habiles").value || 0, imp = +actaRef.impugnados || 0;
+  const total = val + b + n + imp;
+  const avisos = [];
+
+  // 1) ¿Cuadra con el total que la mesa escribió en el acta? Aquí es donde se ve un error al llenarla.
+  if (actaRef.total != null && total !== actaRef.total) {
+    const d = total - actaRef.total;
+    avisos.push(`El acta dice <b>${actaRef.total}</b> votos emitidos, pero estos números suman <b>${total}</b>: ${d > 0 ? `sobran <b>${d}</b>` : `faltan <b>${-d}</b>`}. Revisa los partidos, los blancos y los nulos contra la foto.`);
+  }
+  // 2) Más votos que electores inscritos es imposible. Que sobren hábiles NO lo es: son los que no fueron a votar.
+  if (h > 0 && total > h) avisos.push(`<b>${total}</b> votos con <b>${h}</b> electores hábiles: sobran <b>${total - h}</b>, y eso no puede ser.`);
+  // 3) La app todavía no guarda los impugnados: si los hay, que el personero lo sepa.
+  if (imp > 0) avisos.push(`El acta tiene <b>${imp}</b> voto(s) impugnado(s). Se cuentan en el total pero esta app no los guarda por separado: avísale al coordinador.`);
+
+  document.getElementById("c_total").innerHTML =
+    `✅ Votos válidos: <b>${val}</b> · Blancos: ${b} · Nulos: ${n}${imp ? ` · Impugnados: ${imp}` : ""} · <b>Total: ${total}</b>` +
+    avisos.map(a => `<div class="alert warn" style="margin:8px 0 0">⚠ ${a}</div>`).join("");
 }
 function contarPendientes(){ document.getElementById("n_pend").textContent = db.actas.filter(a=>!a.subida).length + db.aperturas.filter(a=>!a.subida).length; }
 function leerFormulario(){
@@ -130,7 +150,7 @@ async function leerActaAhora(){
   const foto = document.getElementById("c_foto").files[0];
   if (!foto) { est.textContent = "Primero toma o selecciona la foto del acta."; return; }
   if (!iaOK()) { est.textContent = "La IA no está configurada. Ingresa los números a mano."; return; }
-  dud.innerHTML = ""; ultimaIA = null; const t0 = Date.now();
+  dud.innerHTML = ""; ultimaIA = null; actaRef = { total: null, impugnados: 0 }; const t0 = Date.now();
   try {
     est.textContent = "⏳ Preparando…";
     const { claves, pago } = await clavesDisponibles(CONFIG.ia);
@@ -142,6 +162,8 @@ async function leerActaAhora(){
     partidos().forEach(p => { if (json.votos && p.sigla in json.votos) document.getElementById("v_"+p.sigla).value = +json.votos[p.sigla] || 0; });
     if ("blancos" in json) document.getElementById("c_blancos").value = +json.blancos || 0;
     if ("nulos" in json) document.getElementById("c_nulos").value = +json.nulos || 0;
+    actaRef = { total: ("total_emitidos" in json && +json.total_emitidos > 0) ? +json.total_emitidos : null,
+                impugnados: +json.impugnados || 0 };
     recalcTotal();
     est.textContent = `✓ Leído con ${proveedor} · ${modeloUsado}${claves.length > 1 ? " · " + claveUsada : ""}. REVISA cada número contra la foto antes de guardar.`;
     const avisosHtml = (avisos && avisos.length) ? `<div class="alert warn">🔑 ${avisos.map(esc).join(" · ")} — avisa al administrador.</div>` : "";
@@ -163,7 +185,9 @@ async function guardarActaAhora(){
   }
   const suma = sumaActa(acta);
   if (suma === 0 && !confirm("El acta tiene 0 votos. ¿Guardar igual?")) return;
-  if (acta.habiles > 0 && suma > acta.habiles && !confirm(`Ojo: ${suma} votos es MÁS que ${acta.habiles} electores hábiles. ¿Guardar igual?`)) return;
+  if (acta.habiles > 0 && suma > acta.habiles && !confirm(`Ojo: ${suma} votos con ${acta.habiles} electores hábiles — sobran ${suma - acta.habiles} y eso no puede ser. ¿Guardar igual?`)) return;
+  if (actaRef.total != null && suma + (+actaRef.impugnados || 0) !== actaRef.total &&
+      !confirm(`Ojo: el acta dice ${actaRef.total} votos emitidos y estos números suman ${suma + (+actaRef.impugnados || 0)}. ¿Guardar igual?`)) return;
   const i = db.actas.findIndex(a => a.mesa === acta.mesa);
   if (i >= 0 && !confirm(`Ya guardaste el acta de la mesa ${acta.mesa}. ¿Reemplazarla?`)) return;
   acta.hash = await hashActa(acta, partidos());
