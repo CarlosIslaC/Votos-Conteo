@@ -26,14 +26,17 @@
   [headers.values]
     Cache-Control = "public, max-age=0, must-revalidate"
 
-# comun.js y estilos.css son los pesados (~60 kB juntos): una hora en caché y luego revalidan.
-# En el celular del personero eso es una sola descarga en todo el día, no una por recarga.
+# comun.js y estilos.css son los pesados (~65 kB juntos), pero NO se cachean por tiempo: se revalidan
+# siempre. Con una hora de caché, un celular que ya abrió la app seguiría usando el código viejo hasta
+# una hora después de publicar un arreglo — inaceptable el día de la elección, cuando una corrección
+# urgente tiene que llegar ya. Revalidar cuesta un 304 de unos cientos de bytes, no los 65 kB: el
+# ahorro de datos se mantiene casi entero y el riesgo desaparece.
 [[headers]]
   for = "/comun.js"
   [headers.values]
-    Cache-Control = "public, max-age=3600, must-revalidate"
+    Cache-Control = "public, max-age=0, must-revalidate"
 
 [[headers]]
   for = "/estilos.css"
   [headers.values]
-    Cache-Control = "public, max-age=3600, must-revalidate"
+    Cache-Control = "public, max-age=0, must-revalidate"
