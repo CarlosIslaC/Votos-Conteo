@@ -145,7 +145,8 @@ async function leerActaAhora(){
     recalcTotal();
     est.textContent = `✓ Leído con ${proveedor} · ${modeloUsado}${claves.length > 1 ? " · " + claveUsada : ""}. REVISA cada número contra la foto antes de guardar.`;
     const avisosHtml = (avisos && avisos.length) ? `<div class="alert warn">🔑 ${avisos.map(esc).join(" · ")} — avisa al administrador.</div>` : "";
-    dud.innerHTML = avisosHtml + ((Array.isArray(json.dudas) && json.dudas.length) ? `<div class="alert warn">⚠ Revisa: ${json.dudas.map(esc).join(" · ")}</div>` : "");
+    const dudas = dudasReales(json.dudas);     // se descartan las "dudas" que en realidad dicen que todo cuadra
+    dud.innerHTML = avisosHtml + (dudas.length ? `<div class="alert warn">⚠ Revisa: ${dudas.map(esc).join(" · ")}</div>` : "");
   } catch(e) { est.textContent = "❌ " + e.message; }
 }
 

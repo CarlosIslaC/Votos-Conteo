@@ -518,7 +518,8 @@ Reglas:
 3. Si un partido permitido no aparece en el acta o su casilla está vacía, pon 0.
 4. Si un número está tachado, corregido o poco legible, da tu mejor lectura y agrégalo a "dudas" (ej. "APP: 150 o 156?").
 5. No inventes: si un dato no se ve, deja 0 (o "" en mesa) y anótalo en "dudas".
-6. Verifica: la suma de todos los votos + blancos + nulos + impugnados debe ser cercana a TOTAL DE VOTOS EMITIDOS y nunca mayor que los electores hábiles. Si no cuadra, anótalo en "dudas".
+6. Verifica EN SILENCIO: la suma de todos los votos + blancos + nulos + impugnados debe coincidir con TOTAL DE VOTOS EMITIDOS y nunca ser mayor que los electores hábiles. Escribe en "dudas" SOLO si NO cuadra.
+7. "dudas" es únicamente para PROBLEMAS: un número ilegible, tachado o corregido, o una cuenta que no cuadra. Si todo se leyó bien y las cuentas cuadran, devuelve "dudas":[] vacío. NUNCA pongas en "dudas" una comprobación que salió bien (nada de "la suma coincide", "todo correcto", "concuerda"): el personero ve cada entrada como una advertencia, y si salen en actas buenas deja de hacerle caso a las de verdad.
 
 Partidos permitidos (sigla = nombre — candidato):
 ${lista}
@@ -532,6 +533,22 @@ Devuelve SOLO este JSON, sin texto extra ni markdown:
    el admin en Estado: al cambiarlas llegan solas a todos los celulares, sin volver a subir archivos.
    config.js puede traer claves extra de respaldo (ia.keys o ia.key). */
 const IA_FILA = "_ia", LS_CLAVES_NUBE = "cr_ia_claves_nube";
+// La IA a veces anota en "dudas" una comprobación que SALIÓ BIEN ("la suma coincide con el total").
+// El personero lo ve como una advertencia en un acta que está perfecta, y acaba ignorando también las
+// advertencias de verdad. El prompt ya se lo prohíbe, pero el modelo varía: aquí se filtran igual.
+const DUDA_CONFIRMA = /(coincide|coinciden|cuadra|cuadran|concuerda|concuerdan|es correcto|son correctos|correctamente|sin (problema|observaci[oó]n|discrepancia)|todo (bien|correcto|en orden)|no hay (dudas|problemas|discrepancias))/i;
+const DUDA_PROBLEMA = /(no\s+(coincide|coinciden|cuadra|cuadran|concuerda)|difiere|discrepa|mayor que|menor que|ileg|tachad|borros|dudos|no se (ve|lee|distingue)|corregid|sobreescrit|\?)/i;
+const DUDA_NEGADA = /\b(no hay|sin|ninguna|ningun|ningún)\s+(dudas?|problemas?|discrepancias?|observaciones?|observaci[oó]n|anomal[ií]as?)\b/ig;
+function dudasReales(lista){
+  return (Array.isArray(lista) ? lista : []).map(d => String(d || "").trim()).filter(t => {
+    if (!t) return false;
+    // "no hay discrepancias" dice que todo está bien, aunque lleve dentro la palabra "discrepa"
+    const limpio = t.replace(DUDA_NEGADA, " ");
+    if (DUDA_PROBLEMA.test(limpio)) return true;               // "no coincide" sí es una duda de verdad
+    if (limpio !== t) return false;                            // era solo "no hay / ninguna ..." y no quedó problema
+    return !DUDA_CONFIRMA.test(t);
+  });
+}
 function partirClaves(txt){
   return String(txt || "").split(/[\s,;]+/).map(k => k.replace(/^["'`]+|["'`]+$/g, "").trim())
     .filter(k => k.length >= 30 && !/PEGA_AQUI/.test(k));
