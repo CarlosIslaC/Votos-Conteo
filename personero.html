@@ -116,12 +116,13 @@ function recalcTotal(){
   }
   // 2) Más votos que electores inscritos es imposible. Que sobren hábiles NO lo es: son los que no fueron a votar.
   if (h > 0 && total > h) avisos.push(`<b>${total}</b> votos con <b>${h}</b> electores hábiles: sobran <b>${total - h}</b>, y eso no puede ser.`);
-  // 3) La app todavía no guarda los impugnados: si los hay, que el personero lo sepa.
-  if (imp > 0) avisos.push(`El acta tiene <b>${imp}</b> voto(s) impugnado(s). Se cuentan en el total pero esta app no los guarda por separado: avísale al coordinador.`);
+  // La naranja es SOLO para lo que no cuadra. Los impugnados son un dato, no un fallo: van como nota
+  // gris. (La app todavía no los guarda por separado, y eso conviene que el personero lo sepa.)
+  const nota = imp > 0 ? `<div class="muted" style="margin:6px 0 0">Los ${imp} voto(s) impugnado(s) entran en el total, pero esta app no los guarda por separado.</div>` : "";
 
   document.getElementById("c_total").innerHTML =
     `✅ Votos válidos: <b>${val}</b> · Blancos: ${b} · Nulos: ${n}${imp ? ` · Impugnados: ${imp}` : ""} · <b>Total: ${total}</b>` +
-    avisos.map(a => `<div class="alert warn" style="margin:8px 0 0">⚠ ${a}</div>`).join("");
+    avisos.map(a => `<div class="alert warn" style="margin:8px 0 0">⚠ ${a}</div>`).join("") + nota;
 }
 function contarPendientes(){ document.getElementById("n_pend").textContent = db.actas.filter(a=>!a.subida).length + db.aperturas.filter(a=>!a.subida).length; }
 function leerFormulario(){
