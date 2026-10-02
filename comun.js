@@ -32,8 +32,15 @@ async function fetchConTimeout(url, opts, ms){
   const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), ms);
   try { return await fetch(url, Object.assign({}, opts, { signal: ctl.signal })); } finally { clearTimeout(t); }
 }
-// Reduce la foto (máx. 1600 px, JPEG 85%) → sube ~10x más rápido y la IA la lee igual de bien.
-async function comprimirImagen(file, maxLado = 1600, calidad = 0.85){
+// Reduce la foto (máx. 1500 px de lado) y baja la calidad JPEG hasta que pese menos del objetivo
+// (~200 kB). Con 1600 px / 85 % las fotos pesaban ~245 kB cada una; así quedan cerca de la mitad, que
+// es la mitad de subida, de almacenamiento y de datos del celular del personero. No se baja de 0,6 de
+// calidad ni de 1500 px para que los números del acta sigan legibles para la IA.
+// El resultado se guarda en memoria: leerActa() y guardarActa() comprimen la misma foto una sola vez.
+const FOTO_CACHE = new WeakMap();
+async function comprimirImagen(file, maxLado = 1500, calidad = 0.78, pesoObjetivo = 200 * 1024){
+  if (FOTO_CACHE.has(file)) return FOTO_CACHE.get(file);
+  const guardar = b => { try { FOTO_CACHE.set(file, b); } catch(e) {} return b; };
   try {
     const url = URL.createObjectURL(file);
     const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
@@ -41,8 +48,12 @@ async function comprimirImagen(file, maxLado = 1600, calidad = 0.85){
     const esc = Math.min(1, maxLado / Math.max(img.width, img.height));
     const c = document.createElement("canvas"); c.width = Math.round(img.width * esc); c.height = Math.round(img.height * esc);
     c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
-    const blob = await new Promise(res => c.toBlob(res, "image/jpeg", calidad));
-    return blob && blob.size < file.size ? blob : file;
+    let blob = null;
+    for (let q = calidad; q >= 0.6; q -= 0.09) {
+      blob = await new Promise(res => c.toBlob(res, "image/jpeg", q));
+      if (!blob || blob.size <= pesoObjetivo) break;
+    }
+    return guardar(blob && blob.size < file.size ? blob : file);
   } catch(e) { return file; }
 }
 async function sha16(str){
@@ -52,6 +63,13 @@ async function sha16(str){
 // Huella del acta (misma fórmula que contador.py): mesa|habiles|blancos|nulos|votos en orden de partidos
 async function hashActa(a, partidos){
   return sha16([a.mesa, a.habiles, a.blancos, a.nulos, ...partidos.map(p => a.votos[p.sigla] || 0)].join("|"));
+}
+// Bloquea el botón mientras la operación corre: en un celular lento, el personero toca dos o tres
+// veces "Leer" o "Guardar" y cada toque era una subida (o una tanda de peticiones de IA) más.
+async function ocupar(btn, textoOcupado, fn){
+  const hecho = btn && !btn.disabled ? (() => { const t = btn.innerHTML; btn.disabled = true;
+    if (textoOcupado) btn.innerHTML = textoOcupado; return () => { btn.disabled = false; btn.innerHTML = t; }; })() : null;
+  try { return await fn(); } finally { if (hecho) hecho(); }
 }
 async function copiar(txt){ try{ await navigator.clipboard.writeText(txt); return true; }catch(e){ return false; } }
 
@@ -268,6 +286,53 @@ function renderReporte(el, { actas, aperturas, partidos, nombre, lugar, totalMes
   el.innerHTML = html;
 }
 
+/* ---------- control de caudal (que la nube no se sature) ----------
+   Todas las peticiones a Supabase pasan por red(): tope de peticiones a la vez, tope de tiempo,
+   y reintento con espera creciente SOLO cuando el servidor pide calma (429) o falla (5xx / sin
+   respuesta). Si el servidor manda "Retry-After", TODAS las peticiones esperan ese rato: así un
+   celular que reintenta no arrastra a los demás ni empeora la congestión. */
+const RED = {
+  aLaVez: 4,            // peticiones simultáneas a la nube por pestaña
+  reintentos: 3,        // intentos totales por petición (1 + 2 reintentos)
+  espera: 700,          // base de la espera creciente (se le suma azar)
+  tiempoLimite: 20000,  // tope por petición
+  pausaHasta: 0,        // hasta cuándo esperan todas (lo pide el servidor con 429/503)
+  frenadas: 0           // cuántas veces el servidor pidió calma (se muestra en Admin → Estado)
+};
+let redVivas = 0; const redCola = [];
+function redTomar(){
+  return new Promise(ok => { if (redVivas < RED.aLaVez) { redVivas++; ok(); } else redCola.push(ok); });
+}
+function redSoltar(){ redVivas--; const sig = redCola.shift(); if (sig) { redVivas++; sig(); } }
+// Espera creciente con azar: evita que todos los celulares reintenten en el mismo instante.
+const redEspera = i => Math.round(RED.espera * Math.pow(2, i) * (0.6 + Math.random() * 0.8));
+function redPedidoDeCalma(r, i){
+  const ra = +(r.headers.get("Retry-After") || 0);
+  return ra > 0 ? Math.min(ra * 1000, 60000) : redEspera(i);
+}
+async function red(url, opts, ms){
+  await redTomar();
+  try {
+    for (let i = 0; ; i++) {
+      const falta = RED.pausaHasta - Date.now();
+      if (falta > 0) await esperar(Math.min(falta, 30000));
+      let r;
+      try { r = await fetchConTimeout(url, opts, ms || RED.tiempoLimite); }
+      catch(e) {                                                  // sin respuesta o se pasó del tiempo
+        if (i >= RED.reintentos - 1) throw new Error("la nube no responde");
+        await esperar(redEspera(i)); continue;
+      }
+      if (r.status === 429 || r.status >= 500) {                   // saturado: todos esperan
+        const pausa = redPedidoDeCalma(r, i);
+        RED.pausaHasta = Date.now() + pausa; RED.frenadas++;
+        if (i >= RED.reintentos - 1) return r;                     // se devuelve el error para avisar
+        await esperar(pausa); continue;
+      }
+      return r;
+    }
+  } finally { redSoltar(); }
+}
+
 /* ---------- Supabase (nube) ---------- */
 const SB = { url: "", key: "" };
 function sbListo(){ return !!(SB.url && SB.key); }
@@ -275,23 +340,82 @@ function sbListo(){ return !!(SB.url && SB.key); }
 function sbAuth(){ const h = { apikey: SB.key }; if (/^eyJ/.test(SB.key)) h["Authorization"] = "Bearer " + SB.key; return h; }
 function sbHeaders(extra){ return Object.assign(sbAuth(), { "Content-Type": "application/json" }, extra || {}); }
 async function sbGet(path){
-  const r = await fetch(`${SB.url}/rest/v1/${path}`, { headers: sbHeaders() });
-  if (!r.ok) throw new Error("Supabase " + r.status + (r.status === 404 ? " (¿corriste el SQL?)" : ""));
+  const r = await red(`${SB.url}/rest/v1/${path}`, { headers: sbHeaders() });
+  if (!r.ok) throw new Error("Supabase " + r.status + (r.status === 404 ? " (¿corriste el SQL?)" : r.status === 429 ? " (nube saturada: espera unos segundos)" : ""));
   return r.json();
 }
 async function sbUpsert(tabla, filas, conflicto){
-  const r = await fetch(`${SB.url}/rest/v1/${tabla}?on_conflict=${conflicto}`, {
+  const r = await red(`${SB.url}/rest/v1/${tabla}?on_conflict=${conflicto}`, {
     method: "POST", headers: sbHeaders({ Prefer: "resolution=merge-duplicates,return=minimal" }), body: JSON.stringify(filas) });
   if (!r.ok) throw new Error("Supabase " + r.status + ": " + (await r.text()).slice(0, 140));
 }
 async function sbDelete(tabla, filtro){
-  const r = await fetch(`${SB.url}/rest/v1/${tabla}?${filtro}`, { method: "DELETE", headers: sbHeaders() });
+  const r = await red(`${SB.url}/rest/v1/${tabla}?${filtro}`, { method: "DELETE", headers: sbHeaders() });
   if (!r.ok) throw new Error("Supabase " + r.status + " (¿agregaste la política de borrado del SQL?)");
 }
 const sbBorrarActa     = (e, mesa) => sbDelete("actas", `eleccion=eq.${encodeURIComponent(e)}&mesa=eq.${encodeURIComponent(mesa)}`);
 const sbBorrarApertura = (e, mesa) => sbDelete("aperturas", `eleccion=eq.${encodeURIComponent(e)}&mesa=eq.${encodeURIComponent(mesa)}`);
-const sbFetchActas     = e => sbGet(`actas?eleccion=eq.${encodeURIComponent(e)}&select=*&order=creado.asc`);
-const sbFetchAperturas = e => sbGet(`aperturas?eleccion=eq.${encodeURIComponent(e)}&select=*&order=hora.asc`);
+// Columnas explícitas en vez de select=*: ia_lectura (la lectura cruda de la IA) pesa más que todo el
+// resto del acta junto y solo la usa la tabla de precisión, así que no viaja en el refresco del tablero.
+const COLS_ACTA = "mesa,habiles,votos,blancos,nulos,personero,hash,foto_url,creado";
+const COLS_ACTA_IA = COLS_ACTA + ",ia_lectura,ia_modelo,ia_proveedor,ia_segundos,corregida";
+const sbFetchActas     = e => sbGet(`actas?eleccion=eq.${encodeURIComponent(e)}&select=${COLS_ACTA}&order=creado.asc`);
+const sbFetchAperturas = e => sbGet(`aperturas?eleccion=eq.${encodeURIComponent(e)}&select=mesa,estado,hora,personero&order=hora.asc`);
+// Con las columnas de entrenamiento (para la tabla de precisión). Si todavía no existen, cae a las normales.
+const sbFetchActasIA   = e => sbGet(`actas?eleccion=eq.${encodeURIComponent(e)}&select=${COLS_ACTA_IA}&order=creado.asc`)
+  .catch(err => { if (!/42703|column|400/i.test(err.message)) throw err; return sbFetchActas(e); });
+// Huella: mesa+hash de cada acta y mesa+estado de cada instalación. Medido con 200 mesas: 22,7 kB
+// frente a 187,3 kB de bajarlo todo (8 veces menos), así que el refresco pregunta "¿cambió algo?".
+async function sbHuella(e){
+  const [a, p] = await Promise.all([
+    sbGet(`actas?eleccion=eq.${encodeURIComponent(e)}&select=mesa,hash&order=mesa.asc`),
+    sbGet(`aperturas?eleccion=eq.${encodeURIComponent(e)}&select=mesa,estado&order=mesa.asc`)
+  ]);
+  return huellaDe(a, p);
+}
+// Datos del distrito con memoria. Devuelve {actas, aperturas, cambio}.
+// La huella se consulta solo cuando el ritmo está TRANQUILO: si en el refresco anterior llegó algo,
+// lo más probable es que siga llegando, así que baja directo y no gasta la petición de la huella.
+// En el pico de la tarde eso evita el costo extra; en las horas muertas ahorra ~10 veces los datos.
+// forzar=true baja todo igual (al abrir la página, o al tocar "Actualizar").
+const DATOS = { huella: null, valor: null, ultimoCambio: true };
+// La huella se arma SIEMPRE ordenando por mesa, no en el orden en que vinieron las filas: si no,
+// comparar la huella (ordenada por mesa) con los datos (ordenados por hora) daría cambios falsos.
+const huellaDe = (actas, aperturas) =>
+  actas.map(x => x.mesa + ":" + (x.hash || "")).sort().join(",") + "|" +
+  aperturas.map(x => x.mesa + ":" + x.estado).sort().join(",");
+// Una sola consulta a la vez. Si dos partes de la página piden los datos al mismo tiempo (el refresco
+// automático y un clic, por ejemplo), comparten la misma respuesta en vez de pedirla dos veces — y,
+// sobre todo, no se pisan la memoria de huellas, que daría "sin cambios" cuando sí cambió.
+let datosEnVuelo = null;
+function sbDatos(e, forzar){
+  if (datosEnVuelo && !forzar) return datosEnVuelo;
+  const anterior = datosEnVuelo;
+  const mia = (async () => {
+    if (anterior) { try { await anterior; } catch(err) {} }      // una forzada espera su turno
+    return sbDatosAhora(e, forzar);
+  })();
+  datosEnVuelo = mia;
+  mia.catch(() => {}).then(() => { if (datosEnVuelo === mia) datosEnVuelo = null; });
+  return mia;
+}
+async function sbDatosAhora(e, forzar){
+  if (!forzar && DATOS.valor && !DATOS.ultimoCambio) {
+    if (await sbHuella(e) === DATOS.huella) return Object.assign({ cambio: false }, DATOS.valor);
+  }
+  const [actas, aperturas] = await Promise.all([sbFetchActas(e), sbFetchAperturas(e)]);
+  const h = huellaDe(actas, aperturas);
+  const cambio = h !== DATOS.huella;
+  DATOS.valor = { actas, aperturas }; DATOS.huella = h; DATOS.ultimoCambio = cambio;
+  return { actas, aperturas, cambio };
+}
+function sbOlvidarDatos(){ DATOS.huella = null; DATOS.valor = null; DATOS.ultimoCambio = true; }
+// Cuenta filas sin bajarlas (PostgREST devuelve el total en la cabecera Content-Range).
+async function sbContar(tabla, e){
+  const r = await red(`${SB.url}/rest/v1/${tabla}?eleccion=eq.${encodeURIComponent(e)}&select=mesa&limit=1`, { headers: sbHeaders({ Prefer: "count=exact" }) });
+  if (!r.ok) throw new Error("Supabase " + r.status);
+  return +((r.headers.get("content-range") || "").split("/")[1] || 0);
+}
 async function sbFetchConfig(e){ const r = await sbGet(`config?eleccion=eq.${encodeURIComponent(e)}&select=*`); return r[0] || null; }
 const sbFetchConfigs   = () => sbGet(`config?select=eleccion,nombre,ubicacion,total_mesas,actualizado&order=actualizado.desc`)
   .then(l => l.filter(c => !String(c.eleccion || "").startsWith("_")));   // "_ia" guarda las claves de IA: no es una elección
@@ -316,8 +440,8 @@ const sbUpsertApertura = (e, a) => sbUpsert("aperturas", [{ eleccion: e, mesa: a
 async function sbSubirFoto(e, mesa, file){
   const ext = (file.type||"image/jpeg").includes("png") ? "png" : "jpg";
   const ruta = `${encodeURIComponent(e.replace(/\|/g,"_"))}/${encodeURIComponent(mesa)}.${ext}`;
-  const r = await fetch(`${SB.url}/storage/v1/object/actas/${ruta}`, {
-    method: "POST", headers: Object.assign(sbAuth(), { "Content-Type": file.type||"image/jpeg", "x-upsert": "true" }), body: file });
+  const r = await red(`${SB.url}/storage/v1/object/actas/${ruta}`, {
+    method: "POST", headers: Object.assign(sbAuth(), { "Content-Type": file.type||"image/jpeg", "x-upsert": "true" }), body: file }, 60000);
   if (!r.ok) throw new Error("Storage " + r.status);
   return `${SB.url}/storage/v1/object/public/actas/${ruta}`;
 }
@@ -422,7 +546,7 @@ function clavesNubeCache(){ try { const l = JSON.parse(localStorage.getItem(LS_C
 const LS_PAGO = "cr_ia_pago";
 function pagoCache(){ try { return localStorage.getItem(LS_PAGO) === "1"; } catch(e) { return false; } }
 async function sbLeerClavesIA(ms = 3000){
-  const r = await fetchConTimeout(`${SB.url}/rest/v1/config?eleccion=eq.${IA_FILA}&select=ia_key,ia_modelo`, { headers: sbHeaders() }, ms);
+  const r = await red(`${SB.url}/rest/v1/config?eleccion=eq.${IA_FILA}&select=ia_key,ia_modelo`, { headers: sbHeaders() }, ms);
   if (!r.ok) throw new Error("Supabase " + r.status);
   const fila = (await r.json())[0], l = partirClaves(fila && fila.ia_key), pago = (fila && fila.ia_modelo) === "pago";
   try { localStorage.setItem(LS_CLAVES_NUBE, JSON.stringify(l)); localStorage.setItem(LS_PAGO, pago ? "1" : "0"); } catch(e) {}
@@ -438,6 +562,18 @@ async function clavesDisponibles(ia){
   let nube = [];
   if (sbListo()) { try { nube = await sbLeerClavesIA(); } catch(e) { nube = clavesNubeCache(); } }
   return { claves: clavesIA({ keys: nube.concat(clavesIA(ia)) }), pago: pagoCache() };
+}
+// Memoria de las claves que ya se quedaron SIN CUPO hoy: se prueban al final en vez de gastar un
+// intento (y una petición) por cada acta. Se borra sola al cambiar el día, cuando el cupo se renueva.
+const LS_SIN_CUPO = "cr_ia_sin_cupo";
+const hoyStr = () => new Date().toISOString().slice(0, 10);
+function sinCupoHoy(){
+  try { const d = JSON.parse(localStorage.getItem(LS_SIN_CUPO)); return (d && d.fecha === hoyStr() && Array.isArray(d.claves)) ? d.claves : []; }
+  catch(e) { return []; }
+}
+function marcarSinCupo(huella){
+  try { const l = sinCupoHoy(); if (l.indexOf(huella) < 0) l.push(huella);
+        localStorage.setItem(LS_SIN_CUPO, JSON.stringify({ fecha: hoyStr(), claves: l })); } catch(e) {}
 }
 // Memoria del modelo y de la clave que respondieron bien: se prueban primero la próxima vez.
 const LS_MODELO_OK = "cr_ia_modelo_ok", LS_CLAVE_OK = "cr_ia_clave_ok";
@@ -499,7 +635,9 @@ function peticionIA(c, b64, mime, prompt){
 //    falla Y el admin lo encendió; apagado (por defecto), la lectura es 100% gratis;
 //  · arranca con la clave y el modelo que respondieron la última vez;
 //  · si una combinación FALLA (clave rechazada, sin cupo, modelo saturado) arranca la siguiente al instante;
-//  · si solo TARDA, cada 4 s suma otra en paralelo (de otro modelo si se puede), hasta 3 a la vez;
+//  · si solo TARDA, cada ~4 s suma otra en paralelo (de otro modelo si se puede), hasta 2 a la vez;
+//  · nunca pasa de 10 peticiones por acta: con claves gratis compartidas, el cupo es el recurso escaso;
+//  · una clave que contesta "sin cupo por hoy" se prueba al final el resto del día;
 //  · un modelo saturado descansa 8 s, luego 16 s, luego 30 s, y vuelve a entrar;
 //  · la primera respuesta válida gana y se cancelan las demás.
 // Una clave rechazada (401/403) se descarta entera; sin cupo o sin saldo (429/402), solo para ese modelo.
@@ -519,7 +657,9 @@ async function leerActaConIA({ foto, partidos, clave, claves, modelo, disponible
 
   // claves: la recordada primero; el nombre "clave N" sigue el orden de la lista (nube y luego config.js)
   const nombre = new Map(lista.map((k, i) => [k, "clave " + (i + 1)]));
-  const orden = lista.slice(), hr = claveRecordada();
+  const agotadas = sinCupoHoy();
+  const orden = lista.slice().sort((a, b) => (agotadas.indexOf(huellaClave(a)) >= 0) - (agotadas.indexOf(huellaClave(b)) >= 0));
+  const hr = claveRecordada();
   const ir = orden.findIndex(k => huellaClave(k) === hr); if (ir > 0) orden.unshift(orden.splice(ir, 1)[0]);
   // modelos de Gemini: el recordado primero
   const cadena = cadenaModelos(modelo, disponibles);
@@ -558,26 +698,38 @@ async function leerActaConIA({ foto, partidos, clave, claves, modelo, disponible
     const cod = r.ok ? (+(d && d.error?.code) || 503) : r.status;
     if (cod === 401 || cod === 403 || (cod === 400 && /api.?key|credential/i.test(err)))
       clavesMalas.set(c.k, `${nombre.get(c.k)} (${huellaClave(c.k)}, ${PROV[c.prov].nombre}) rechazada: ${cod === 401 ? "no existe o fue borrada" : cod === 403 ? "sin permiso" : "clave inválida"}`);
-    else if (cod === 429 || cod === 402) { descartados.add(c.id); sinCupo.set(c.k, nombre.get(c.k) + (cod === 402 ? " (sin saldo)" : " (sin cupo por hoy)")); }
+    else if (cod === 429 || cod === 402) {
+      descartados.add(c.id); sinCupo.set(c.k, nombre.get(c.k) + (cod === 402 ? " (sin saldo)" : " (sin cupo por hoy)"));
+      const ra = +(r.headers.get("Retry-After") || 0);                // el proveedor dice cuánto esperar: se respeta
+      if (ra > 0) descanso.set(c.m, Date.now() + Math.min(ra * 1000, 60000));
+      if (cod === 429 && /quota|daily|per day|rate/i.test(err)) marcarSinCupo(huellaClave(c.k));
+    }
     else if (cod === 404) noExiste.add(c.prov + "|" + c.m);
     else saturar(c.m);                                             // 503, 500, 502…
     throw new Error(etiqueta(c) + ": " + cod);
   };
 
+  // Tope de peticiones por acta. Sin esto, una sola lectura podía recorrer todas las combinaciones de
+  // clave × modelo (con 3 claves y 14 modelos, hasta 42 peticiones) contra las MISMAS claves gratis que
+  // comparten todos los personeros: el día de la elección eso quema el cupo diario en los primeros minutos.
+  const MAX_PETICIONES = 10;
+  let lanzados = 0;
+
   // carrera continua sobre un grupo de combinaciones; resuelve el ganador o null
   const carrera = (grupo, tope, aviso) => new Promise(resolve => {
-    const ESCALON = 4000, MAX_VIVOS = 3, POR_INTENTO = 25000;
+    const ESCALON = 4000, MAX_VIVOS = 2, POR_INTENTO = 25000;
     const vivos = new Map(), t0 = Date.now(); let fin = false, ultimo = 0, reloj = null;
     const cerrar = x => { if (fin) return; fin = true; clearInterval(reloj); vivos.forEach(v => v.ctl.abort()); resolve(x); };
     const lanzar = otroModelo => {
       if (fin || vivos.size >= MAX_VIVOS) return;
+      if (lanzados >= MAX_PETICIONES) { if (!vivos.size) cerrar(null); return; }   // se agotó el cupo de intentos del acta
       if (!grupo.some(util)) { if (!vivos.size) cerrar(null); return; }        // ya no queda clave ni modelo que sirva
       const ahora = Date.now(), enVuelo = new Set([...vivos.values()].map(v => v.c.m));
       const libres = grupo.filter(c => util(c) && !vivos.has(c.id) && !((descanso.get(c.m) || 0) > ahora));
       if (!libres.length) { if (!vivos.size) est(aviso); return; }             // todos descansan: el reloj reintenta
       const c = (otroModelo && libres.find(x => !enVuelo.has(x.m))) || libres[0];
       const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), POR_INTENTO);
-      vivos.set(c.id, { c, ctl }); ultimo = ahora;
+      vivos.set(c.id, { c, ctl }); ultimo = ahora; lanzados++;
       est(`Leyendo con ${[...vivos.values()].map(v => etiqueta(v.c)).join(" y ")}…`);
       intentar(c, ctl).then(x => { clearTimeout(t); cerrar(x); },
                            () => { clearTimeout(t); vivos.delete(c.id); lanzar(false); });
@@ -586,7 +738,7 @@ async function leerActaConIA({ foto, partidos, clave, claves, modelo, disponible
       if (fin) return;
       if (Date.now() - t0 > tope) return cerrar(null);
       if (!vivos.size) lanzar(false);                               // nada en vuelo (todos descansaban): reintenta
-      else if (Date.now() - ultimo >= ESCALON) lanzar(true);        // tarda: suma otro en paralelo, de otro modelo
+      else if (Date.now() - ultimo >= ESCALON + Math.random() * 2000) lanzar(true);   // tarda: suma otro en paralelo (con azar, para no coincidir con los demás celulares)
     }, 500);
     lanzar(false);
   });

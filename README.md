@@ -9,6 +9,8 @@ No hay enlaces ni pantallas de configuración.
 | `admin.html` | Coordinador (con PIN) | Reporte con gráfico y alertas · lista de actas e instalaciones con **🗑 borrar** · quiénes reportaron · exportar CSV · estado de nube/IA |
 | `config.js` | Coordinador | **Único archivo que se edita**: claves, total de mesas, candidatos |
 | `comun.js`, `estilos.css` | — | compartidos (no tocar) |
+| `netlify.toml` | — | cabeceras para Netlify (caché y que el sitio no se indexe) |
+| `AUDITORIA.md` | Coordinador | **qué aguanta la app en producción y qué tienes que hacer antes del día de la elección** |
 
 ## Puesta en marcha (3 pasos)
 

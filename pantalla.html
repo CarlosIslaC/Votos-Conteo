@@ -115,18 +115,32 @@ function cabecera(){
 }
 setInterval(() => { $("t_reloj").textContent = new Date().toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }, 1000);
 
+/* Refresco de la pantalla de TV: cadena de setTimeout en vez de setInterval, así una consulta lenta
+   no deja peticiones apiladas. Se mantiene en 10 s mientras lleguen actas y se relaja hasta 60 s
+   cuando no hay movimiento (de noche, o antes de que abran las mesas). */
+const RITMO = { vivo: 10000, max: 60000 };
+let intervalo = RITMO.vivo, quietos = 0, refrescando = false, reloj = null;
+function programar(){
+  clearTimeout(reloj);
+  reloj = setTimeout(() => refrescar().then(programar), intervalo + Math.random() * 1500);
+}
 async function refrescar(){
+  if (refrescando) return;
+  refrescando = true;
   $("main").classList.add("cargando");
   try {
     await cargarCfg(); cabecera();
-    const [actas, aperturas] = await Promise.all([sbFetchActas(E), sbFetchAperturas(E)]);
+    const d = await sbDatos(E);                       // solo baja las actas si cambió algo
+    const actas = d.actas, aperturas = d.aperturas;
+    if (d.cambio) { quietos = 0; intervalo = RITMO.vivo; } else { quietos++; if (quietos >= 2) intervalo = Math.min(intervalo * 1.5, RITMO.max); }
     ultimo = { actas, aperturas }; $("t_live").className = "live"; $("t_live").textContent = "● EN VIVO";
     $("t_upd").textContent = "actualizado " + new Date().toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     pintar(actas, aperturas);
   } catch(e) {
     $("t_live").className = "live off"; $("t_live").textContent = "● SIN CONEXIÓN";
+    intervalo = Math.min(intervalo * 2, RITMO.max);     // la nube no responde: no insistir cada 10 s
     if (!ultimo) $("hero").innerHTML = `<div class="vacio">${esc(e.message)}</div>`;
-  } finally { $("main").classList.remove("cargando"); }
+  } finally { $("main").classList.remove("cargando"); refrescando = false; }
 }
 
 function pintar(actas, aperturas){
@@ -209,7 +223,11 @@ document.addEventListener("keydown", e => {
   if (e.key === "Escape") $("tabla").style.display = "none";
   if (e.key === "f" || e.key === "F") { document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen(); }
 });
-refrescar(); setInterval(refrescar, 10000);
+refrescar().then(programar);
+document.addEventListener("visibilitychange", () => {         // en una TV no pasa, pero si es un navegador en pestaña, no gasta
+  if (document.hidden) clearTimeout(reloj);
+  else { intervalo = RITMO.vivo; quietos = 0; refrescar().then(programar); }
+});
 </script>
 </body>
 </html>
