@@ -199,12 +199,18 @@ Y antes del día: **Admin → Estado → 🔎 Probar claves**, para ver cuáles 
 la proyección. Se pone en **Admin → Estado → Total de mesas** (se guarda en la nube, no
 hay que volver a subir la carpeta).
 
-### 4. Sube la carpeta de nuevo a Netlify
+### 4. Publica los cambios (ya es automático)
 
-Los cambios de este trabajo están en `comun.js`, `admin.html`, `personero.html`,
-`pantalla.html` y el nuevo `netlify.toml`. Arrastra la carpeta otra vez a
-[app.netlify.com/drop](https://app.netlify.com/drop) (o conecta el repo de GitHub para
-que se suba solo).
+Buenas noticias: el repositorio **ya está conectado a Netlify** (proyecto
+`elecciones-municipales-2026`), así que no hay que arrastrar ninguna carpeta. En cuanto el
+pull request entre a `main`, Netlify publica solo.
+
+Comprobado en el deploy preview del pull request: las cabeceras nuevas se aplican de verdad
+(`comun.js` y `estilos.css` con una hora de caché, el HTML y `config.js` revalidando siempre,
+y `noindex` en todo), y la app carga y funciona desde Netlify contra Supabase.
+
+> El README todavía explica el método de arrastrar la carpeta a app.netlify.com/drop. Como el
+> repo ya está conectado, ese paso sobra; conviene actualizarlo cuando haya tiempo.
 
 ### 5. Haz un ensayo con gente de verdad
 
@@ -249,3 +255,7 @@ Con un navegador real (Chromium) contra tu Supabase de verdad:
   detectó. **Aquí se encontró un error** (dos consultas simultáneas se pisaban la memoria y el tablero
   reportaba "sin cambios" habiendo cambios); se corrigió y la prueba volvió a pasar.
 - Las 200 actas de prueba y el acta suelta se borraron: la base quedó en 0 actas y 0 aperturas.
+- Y lo mismo **sobre Netlify de verdad**, en el deploy preview del pull request: la pantalla del
+  personero carga, muestra los 9 partidos, suma bien y los cuatro botones no duplican peticiones.
+  Las cabeceras llegan como se esperaba (una hora de caché en `comun.js` y `estilos.css`, el HTML y
+  `config.js` revalidando siempre, `noindex` en todo).
