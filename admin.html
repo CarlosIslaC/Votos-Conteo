@@ -30,7 +30,7 @@
   <header class="topbar">
     <div><h1 id="tb_titulo">Tablero</h1><p id="tb_sub"></p></div>
     <div class="tb-actions">
-      <button class="btn ghost sm" onclick="refrescar()">🔄 Actualizar</button>
+      <button class="btn ghost sm" onclick="forzarRefresco()">🔄 Actualizar</button>
       <button class="btn wa sm" onclick="compartirDistrito()">📲 WhatsApp</button>
       <button class="btn ghost sm" onclick="window.print()">🖨 Imprimir</button>
     </div>
@@ -150,7 +150,31 @@ async function probarClaves(titulo){
 }
 const $ = id => document.getElementById(id);
 const TITULOS = { tablero:"Tablero", reporte:"Reporte de campaña", actas:"Actas e instalaciones", personeros:"Personeros", estado:"Estado" };
-let tab = "tablero", poll = null, cache = null;
+let tab = "tablero", poll = null, cache = null, refrescando = false;
+
+/* ---- ritmo del refresco automático ----
+   Antes: setInterval cada 15 s, siempre, incluso con la pestaña en segundo plano; si una consulta
+   tardaba más que el intervalo, las peticiones se apilaban. Ahora: cadena de setTimeout (nunca se
+   solapan), se detiene cuando la pestaña no se ve, y el intervalo crece si nadie está subiendo actas.
+   Con actas llegando se mantiene en 15 s, que es lo que importa el día de la elección. */
+const RITMO = { vivo: 15000, max: 90000 };
+let intervalo = RITMO.vivo, quietos = 0;
+function programar(){
+  clearTimeout(poll); poll = null;
+  if (document.hidden) return;                                  // pestaña en segundo plano: no se consulta
+  if (tab !== "tablero" && tab !== "reporte") return;            // las demás pestañas no se refrescan solas
+  poll = setTimeout(ciclo, intervalo + Math.random() * 2000);     // el azar evita que varios admin coincidan
+}
+async function ciclo(){
+  await refrescar();
+  if (huboCambio) { quietos = 0; intervalo = RITMO.vivo; }        // llegó algo: volver al ritmo rápido
+  else { quietos++; if (quietos >= 2) intervalo = Math.min(intervalo * 1.5, RITMO.max); }
+  programar();
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { clearTimeout(poll); poll = null; }
+  else { intervalo = RITMO.vivo; quietos = 0; refrescar().then(programar); }
+});
 
 async function iniciar(){
   if (nubeOK()) { try { const c = await sbFetchConfig(E); if (c && c.total_mesas) totalMesas = c.total_mesas; } catch(e) {} }
@@ -165,27 +189,49 @@ function activarTab(t){
   tab = t; document.querySelectorAll(".menu button").forEach(b => b.classList.toggle("active", b.dataset.tab === t));
   ["tablero","reporte","actas","personeros","estado"].forEach(s => $(s).classList.toggle("hide", s !== t));
   $("tb_titulo").textContent = TITULOS[t] || t;
-  if (poll) { clearInterval(poll); poll = null; }
-  refrescar(); if (t === "tablero" || t === "reporte") poll = setInterval(refrescar, 15000);
+  clearTimeout(poll); poll = null; intervalo = RITMO.vivo; quietos = 0;
+  refrescar().then(programar);
 }
 document.querySelectorAll(".menu button").forEach(b => b.onclick = () => activarTab(b.dataset.tab));
 
-async function datos(){
+// Pide los datos a la nube pasando por la memoria por huella: si nadie subió ni cambió un acta,
+// solo viajan las huellas (unos kB) en vez de todas las actas. forzar=true baja todo igual.
+let huboCambio = true;
+async function datos(forzar){
   if (!nubeOK()) throw new Error("Nube no configurada (config.js).");
-  const [actas, aperturas] = await Promise.all([sbFetchActas(E), sbFetchAperturas(E)]);
-  cache = { actas, aperturas }; $("sf_upd").textContent = "act. " + horaCorta(ahora()); return cache;
+  const d = await sbDatos(E, forzar);
+  huboCambio = d.cambio;
+  cache = { actas: d.actas, aperturas: d.aperturas };
+  $("sf_upd").textContent = "act. " + horaCorta(ahora()) + (d.cambio ? "" : " ·  sin cambios");
+  return cache;
 }
 async function refrescar(){
-  if (tab === "tablero") return pintarTablero();
-  if (tab === "reporte") return pintarReporte();
-  if (tab === "actas") return pintarActas();
-  if (tab === "personeros") return pintarPersoneros();
-  if (tab === "estado") return pintarEstado();
+  if (refrescando) return;                   // un refresco a la vez: el botón "Actualizar" a repetición no multiplica peticiones
+  refrescando = true;
+  try {
+    if (tab === "tablero") return await pintarTablero();
+    if (tab === "reporte") return await pintarReporte();
+    if (tab === "actas") return await pintarActas();
+    if (tab === "personeros") return await pintarPersoneros();
+    if (tab === "estado") return await pintarEstado();
+  } finally { refrescando = false; }
 }
+// El botón "Actualizar" sí baja todo de nuevo, sin pasar por la memoria de huellas.
+async function forzarRefresco(){ sbOlvidarDatos(); cacheIA = null; intervalo = RITMO.vivo; quietos = 0; await refrescar(); programar(); }
 const errorEn = (id, e) => { $(id).innerHTML = `<div class="alert info">${esc(e.message)}</div>`; };
 
 
 /* ---- precisión de la IA: se calcula con las correcciones reales de los personeros ---- */
+// La lectura cruda de la IA (ia_lectura) es la columna más pesada del acta y solo la usa esta tabla,
+// así que no viaja en el refresco del tablero: se pide una vez al abrir la pestaña Actas y se guarda.
+let cacheIA = null;
+async function actasConIA(actas){
+  if (!actas.length) return actas;
+  if (cacheIA && !huboCambio) return cacheIA;
+  try { cacheIA = await sbFetchActasIA(E); } catch(e) { cacheIA = actas; }
+  return cacheIA;
+}
+
 function pintarPrecision(actas){
   const el = $("precision_ia"); if (!el) return;
   const filas = precisionIA(actas, partidos());
@@ -249,7 +295,7 @@ async function pintarActas(){
   const f = ($("f_actas").value || "").toLowerCase();
   const actas = d.actas.filter(a => !f || String(a.mesa).toLowerCase().includes(f) || (a.personero || "").toLowerCase().includes(f));
   $("n_actas").textContent = d.actas.length; $("n_aper").textContent = d.aperturas.length;
-  pintarPrecision(d.actas);
+  pintarPrecision(await actasConIA(d.actas));
   t1.innerHTML = `<tr><th>Mesa</th><th>Personero</th><th>Hora</th><th class="num">Hábiles</th><th class="num">Total</th><th>Estado</th><th>Foto</th><th></th></tr>` +
     (actas.length ? actas.map(a => { const s = sumaActa(a); const obs = a.habiles > 0 && s > a.habiles;
       return `<tr><td><b>${esc(a.mesa)}</b></td><td>${esc(a.personero || "—")}</td><td>${horaCorta(a.creado)}</td><td class="num">${a.habiles || "—"}</td><td class="num">${s}</td>
@@ -299,13 +345,16 @@ async function pintarEstado(){
   const el = $("estado_cont"); $("e_totalmesas").value = TM() || "";
   await cargarClavesNube(); pintarClavesIA();
   let nube = "⚠ falta poner URL y anon key en config.js";
-  if (nubeOK()) { try { const a = await sbFetchActas(E); nube = `✅ conectada (${a.length} actas)`; } catch(e) { nube = "❌ error: " + e.message; } }
+  if (nubeOK()) { try { nube = `✅ conectada (${await sbContar("actas", E)} actas)`; } catch(e) { nube = "❌ error: " + e.message; } }
   el.innerHTML = `<table>
     <tr><th>Elección</th><td>${esc(CONFIG.nombre)}<br><span class="muted">${esc(E)}</span></td></tr>
     <tr><th>Candidatos</th><td>${partidos().length} partidos cargados</td></tr>
     <tr><th>Total de mesas</th><td>${TM() || '<span class="pill warn">no definido</span> — ponlo arriba'}</td></tr>
     <tr><th>Nube (Supabase)</th><td>${nube}</td></tr>
     <tr><th>IA lectora</th><td>${iaOK() ? `✅ ${clavesNube.length} clave(s) en la nube${clavesIA(CONFIG.ia).length ? ` + ${clavesIA(CONFIG.ia).length} en config.js` : ""} · ${[...new Set(clavesNube.concat(clavesIA(CONFIG.ia)).map(k => PROV[detectarProv(k)].nombre))].join(", ")} · respaldo de pago ${pagoNube ? "encendido" : "apagado (todo gratis)"}` : "⚠ sin claves: pégalas arriba, en «Claves de IA»"}</td></tr>
+    <tr><th>Cupo de IA</th><td>${sinCupoHoy().length ? `<span class="pill warn">${sinCupoHoy().length} clave(s) sin cupo hoy</span> — agrega otra clave, o recarga saldo en OpenRouter` : '<span class="pill ok">ninguna clave agotada hoy</span>'} <span class="muted">(visto desde este equipo)</span></td></tr>
+    <tr><th>Refresco</th><td>cada ${Math.round(intervalo/1000)} s${document.hidden ? " (en pausa: pestaña oculta)" : ""} · solo baja las actas cuando algo cambió</td></tr>
+    <tr><th>Caudal a la nube</th><td>${RED.frenadas ? `<span class="pill warn">la nube pidió calma ${RED.frenadas} vez(ces)</span> — la app esperó y reintentó sola` : '<span class="pill ok">sin frenadas</span>'} · máx. ${RED.aLaVez} peticiones a la vez</td></tr>
     <tr><th>Versión</th><td>${APP_VERSION}</td></tr></table>`;
 }
 iniciar();

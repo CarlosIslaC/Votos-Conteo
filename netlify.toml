@@ -1,0 +1,39 @@
+# Netlify — Conteo Rápido. La app es estática: Netlify solo sirve archivos, el trabajo de verdad
+# lo hacen Supabase (actas y fotos) y las claves de IA. Estas cabeceras existen para que el
+# navegador no vuelva a bajar lo mismo en cada recarga y para que el sitio no se indexe.
+[build]
+  publish = "."
+
+# Nada de la app debe quedar en Google: la llave pública de Supabase viaja en config.js y el enlace
+# se reparte solo al equipo. Sin esto, cualquiera que busque podría encontrar el tablero.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Robots-Tag = "noindex, nofollow"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "no-referrer"
+    X-Frame-Options = "SAMEORIGIN"
+
+# El HTML y config.js cambian cuando vuelves a subir la carpeta: se revalidan siempre (barato,
+# Netlify responde 304 si no cambió) para que nadie se quede con una versión vieja.
+[[headers]]
+  for = "/*.html"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+  for = "/config.js"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+# comun.js y estilos.css son los pesados (~60 kB juntos): una hora en caché y luego revalidan.
+# En el celular del personero eso es una sola descarga en todo el día, no una por recarga.
+[[headers]]
+  for = "/comun.js"
+  [headers.values]
+    Cache-Control = "public, max-age=3600, must-revalidate"
+
+[[headers]]
+  for = "/estilos.css"
+  [headers.values]
+    Cache-Control = "public, max-age=3600, must-revalidate"

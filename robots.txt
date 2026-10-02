@@ -1,0 +1,3 @@
+# El conteo no debe aparecer en buscadores: el enlace se reparte solo al equipo.
+User-agent: *
+Disallow: /
