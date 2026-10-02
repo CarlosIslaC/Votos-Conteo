@@ -9,6 +9,34 @@ prueba en la base, se midió cada consulta con un navegador real y luego se borr
 
 ---
 
+## La escala real: 100 actas ese día
+
+Con 100 actas, **ni Netlify ni Supabase son un problema**. Lo único que puede fallar de
+verdad es el cupo de las claves de IA.
+
+| Recurso | Lo que usas con 100 actas | Cuota gratis | |
+|---|---|---|---|
+| Tráfico de Netlify | ~35 MB | 100 GB/mes | 0,03 % |
+| Almacenamiento de fotos | **14 MB** (100 × ~140 kB) | 1 GB | 1,3 % |
+| Salida de datos de Supabase | **~109 MB** el día entero | 5 GB/mes | 2,1 % |
+| **Lecturas de IA** | **100 actas = 100 a 180 peticiones** | **ver abajo** | **⚠ al filo** |
+
+El cupo de IA, con las 3 claves que tienes hoy:
+
+| Con lo que tienes | Lecturas al día | ¿Alcanza para 100 actas? |
+|---|---|---|
+| Las 2 claves de Google, gratis | ~40 | **No** |
+| + la de OpenRouter, gratis | ~90 | **No** — y eso suponiendo cero reintentos |
+| **+ US$10 en OpenRouter** | **~1 040** | **Sí, con 10 veces de margen** |
+
+O sea: con las claves actuales, en el mejor de los casos la IA lee unas 90 de las 100 actas
+y las demás se escriben a mano — y el mejor de los casos no pasa nunca, porque siempre hay
+reintentos. Con US$10 el problema desaparece.
+
+La otra opción sin gastar es **más cuentas de Gmail**: cada una suma ~20 lecturas, así que
+harían falta unas 5 cuentas más para tener margen. Es gratis pero más trabajo, y cada cuenta
+es una clave más expuesta (ver el punto 1 de "Lo que tienes que hacer tú").
+
 ## Resumen en una frase
 
 **Netlify no es el problema. El problema son dos: el cupo de las claves de IA y el
@@ -99,10 +127,13 @@ Lo que cambió:
   Esto salió de una prueba: con dos consultas a la vez, la memoria de huellas se pisaba y el tablero
   decía "sin cambios" aunque acabara de llegar un acta. Estaba mal y ya está corregido.
 
-**Efecto estimado para un día de elección** (1 tablero + 1 TV abiertos 12 h, 200 mesas):
-de **~660 MB** a **~220 MB**, y en las horas sin movimiento el ahorro es de ~50 veces.
-El plan gratuito de Supabase da 5 GB de salida al mes, así que antes un solo día de
-pruebas con tres pestañas abiertas se comía la cuarta parte del mes.
+**Efecto para un día de elección con 100 actas** (1 tablero + 1 TV abiertos 12 h):
+de **~329 MB** a **~109 MB** — 3 veces menos, y en las horas sin movimiento el ahorro es de
+~50 veces. Sobre los 5 GB mensuales del plan gratuito eso baja del 6,4 % al 2,1 %, así que
+con 100 actas hay sitio de sobra para ensayos y para el día en sí.
+
+> Un refresco con 100 actas cargadas: **93,7 kB** antes, **56,1 kB** en el pico,
+> **11,3 kB** cuando está tranquilo.
 
 ## 4. Peticiones repetidas por doble toque 🟠
 
@@ -182,14 +213,18 @@ decidirlo contigo. Hay dos caminos:
 
 Tu cuello de botella no es el servidor, es el cupo. Según tu propio README:
 
-| Opción | Lecturas al día | Alcanza para |
-|---|---|---|
-| 1 cuenta Gemini gratis | ~20 | 20 mesas |
-| 10 cuentas Gmail distintas | ~200 | justo para 200 mesas, sin margen |
-| **OpenRouter con US$10 de saldo** | **1 000** | 200 mesas con 5x de margen |
+Con las 3 claves que tienes hoy llegas a ~90 lecturas al día y necesitas entre 100 y 180.
+**No alcanza.**
 
-**Recomendación: recarga US$10 en OpenRouter.** Es la diferencia entre que la IA funcione
-toda la tarde y que deje de funcionar a la media hora. Diez dólares.
+| Opción | Lecturas al día | Para 100 actas |
+|---|---|---|
+| Lo que tienes hoy (2 Google + 1 OpenRouter, gratis) | ~90 | no alcanza |
+| + 5 cuentas Gmail más | ~190 | alcanza, pero 5 claves más expuestas |
+| **+ US$10 en OpenRouter** | **~1 040** | **de sobra, y una sola clave** |
+
+**Recomendación: recarga US$10 en OpenRouter.** Es la diferencia entre que la IA lea las 100
+actas y que se quede a mitad de camino. Diez dólares, y es lo único de esta lista que cuesta
+dinero.
 
 Y antes del día: **Admin → Estado → 🔎 Probar claves**, para ver cuáles están vivas.
 
@@ -197,7 +232,10 @@ Y antes del día: **Admin → Estado → 🔎 Probar claves**, para ver cuáles 
 
 `config.js` tiene `totalMesas: 0`. Sin eso el tablero no puede mostrar el % reportado ni
 la proyección. Se pone en **Admin → Estado → Total de mesas** (se guarda en la nube, no
-hay que volver a subir la carpeta).
+hay que volver a subir nada).
+
+Si esperas 100 actas, el total es probablemente 100 — pero ponlo tú, que es el dato oficial
+del distrito y de ahí sale el porcentaje que va a ver todo el mundo.
 
 ### 4. Publica los cambios (ya es automático)
 
