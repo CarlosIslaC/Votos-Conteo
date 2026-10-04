@@ -596,12 +596,23 @@ function marcarSinCupo(huella){
   try { const l = sinCupoHoy(); if (l.indexOf(huella) < 0) l.push(huella);
         localStorage.setItem(LS_SIN_CUPO, JSON.stringify({ fecha: hoyStr(), claves: l })); } catch(e) {}
 }
-// Memoria del modelo y de la clave que respondieron bien: se prueban primero la próxima vez.
-const LS_MODELO_OK = "cr_ia_modelo_ok", LS_CLAVE_OK = "cr_ia_clave_ok";
+// Turno de este celular: un número fijo, distinto en cada aparato, que decide por QUÉ clave empieza.
+// Sin esto, todos los celulares recuerdan la clave que les funcionó —que suele ser la misma— y cuando
+// varios personeros leen a la vez se amontonan sobre esa única clave mientras las demás no se usan.
+// Repartiéndolos, 3 claves rinden casi el triple en el pico de la tarde.
+const LS_TURNO = "cr_ia_turno";
+function turnoDelCelular(){
+  try {
+    let t = localStorage.getItem(LS_TURNO);
+    if (t === null) { t = String(Math.floor(Math.random() * 1000)); localStorage.setItem(LS_TURNO, t); }
+    return +t || 0;
+  } catch(e) { return Math.floor(Math.random() * 1000); }
+}
+// Memoria del modelo que respondió bien: se prueba primero la próxima vez. (La clave ya no se fija:
+// la decide el turno, para que los celulares no se peleen por la misma.)
+const LS_MODELO_OK = "cr_ia_modelo_ok";
 function modeloRecordado(){ try { return localStorage.getItem(LS_MODELO_OK) || ""; } catch(e) { return ""; } }
 function recordarModelo(m){ try { localStorage.setItem(LS_MODELO_OK, m); } catch(e) {} }
-function claveRecordada(){ try { return localStorage.getItem(LS_CLAVE_OK) || ""; } catch(e) { return ""; } }
-function recordarClave(h){ try { localStorage.setItem(LS_CLAVE_OK, h); } catch(e) {} }
 // Prueba una clave contra su proveedor sin gastar cupo (ni dinero). Devuelve {ok, estado, ms, msg, prov, saldo}.
 async function probarClaveIA(clave, ms = 10000){
   const t0 = Date.now(), prov = detectarProv(clave);
@@ -671,6 +682,9 @@ async function leerActaConIA({ foto, partidos, clave, claves, modelo, disponible
   if (typeof navigator !== "undefined" && navigator.onLine === false) throw new Error("Sin internet. Ingresa los números a mano o intenta cuando tengas señal.");
   est("Preparando la foto…");
   const chica = await comprimirImagen(foto);
+  // Desfase corto y al azar: cuando varios personeros tocan "Leer" en el mismo instante, salir todos a
+  // la vez garantiza el choque contra el mismo proveedor. Se nota poco (la foto ya tardó en prepararse).
+  await esperar(Math.random() * 1200);
   const b64 = await fileToBase64(chica);
   const mime = chica.type || "image/jpeg";
   const prompt = promptActa(partidos);
@@ -678,10 +692,13 @@ async function leerActaConIA({ foto, partidos, clave, claves, modelo, disponible
 
   // claves: la recordada primero; el nombre "clave N" sigue el orden de la lista (nube y luego config.js)
   const nombre = new Map(lista.map((k, i) => [k, "clave " + (i + 1)]));
+  // Las claves sin cupo de hoy van al final; el resto se rota según el turno de este celular, para que
+  // cada aparato arranque por una clave distinta y no se amontonen todos sobre la misma.
   const agotadas = sinCupoHoy();
-  const orden = lista.slice().sort((a, b) => (agotadas.indexOf(huellaClave(a)) >= 0) - (agotadas.indexOf(huellaClave(b)) >= 0));
-  const hr = claveRecordada();
-  const ir = orden.findIndex(k => huellaClave(k) === hr); if (ir > 0) orden.unshift(orden.splice(ir, 1)[0]);
+  const vivas = lista.filter(k => agotadas.indexOf(huellaClave(k)) < 0);
+  const secas = lista.filter(k => agotadas.indexOf(huellaClave(k)) >= 0);
+  const giro = vivas.length ? turnoDelCelular() % vivas.length : 0;
+  const orden = vivas.slice(giro).concat(vivas.slice(0, giro)).concat(secas);
   // modelos de Gemini: el recordado primero
   const cadena = cadenaModelos(modelo, disponibles);
   const rec = modeloRecordado();
@@ -780,7 +797,7 @@ async function leerActaConIA({ foto, partidos, clave, claves, modelo, disponible
     if (malas.length) m += " Claves rechazadas: " + malas.join("; ") + ".";
     throw new Error(m);
   }
-  if (!esPago(g.c)) { recordarModelo(g.c.m); recordarClave(huellaClave(g.c.k)); }   // no se recuerda el de pago: solo es respaldo
+  if (!esPago(g.c)) recordarModelo(g.c.m);   // el modelo sí se recuerda; la clave la decide el turno del celular
   return { json: g.json, modeloUsado: g.c.m, claveUsada: nombre.get(g.c.k), proveedor: PROV[g.c.prov].nombre, pago: esPago(g.c), avisos: malas };
 }
 
